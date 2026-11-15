@@ -1,0 +1,8 @@
+{
+  "name": "Spot Trading Practice",
+  "description": "Cryptocurrency spot trading practice simulator with customer and administrative interfaces.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
