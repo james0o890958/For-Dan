@@ -1,4 +1,4 @@
-export type AccountStatus = 'active' | 'suspended';
+export type AccountStatus = 'active' | 'suspended' | 'closed';
 export type KycStatus = 'not_submitted' | 'pending' | 'approved' | 'rejected';
 export type AppRole =
   | 'customer'
@@ -65,7 +65,7 @@ export interface Profile {
   publicUserId: string;
   email: string;
   fullName: string;
-  phone: string;
+  phone: string | null;
   twoFactorEnabled: boolean;
   accountStatus: AccountStatus;
   kycStatus: KycStatus;
@@ -137,7 +137,10 @@ export interface TradingPair {
   isEnabled: boolean;
 }
 
+export type MarketTimeframe = '15M' | '1H' | '4H' | '1D' | '1W';
+
 export interface CandlePoint {
+  timestamp?: number;
   timeLabel: string;
   open: number;
   high: number;
@@ -156,6 +159,36 @@ export interface MarketPrice {
   dataStatus: MarketDataStatus;
   updatedAt: string;
   candles: CandlePoint[];
+}
+
+export interface OrderBookLevel {
+  price: number;
+  size: number;
+  total: number;
+  totalUsdt: number;
+  depthPct: number;
+}
+
+export interface OrderBookSnapshot {
+  symbol: string;
+  asks: OrderBookLevel[];
+  bids: OrderBookLevel[];
+  bestAsk: number;
+  bestBid: number;
+  midPrice: number;
+  spreadUsdt: number;
+  spreadPct: number;
+  updatedAt: string;
+}
+
+export interface PublicMarketTrade {
+  id: string;
+  symbol: string;
+  price: number;
+  quantity: number;
+  quoteAmount: number;
+  side: TradeSide;
+  timestamp: string;
 }
 
 export interface WalletBalance {

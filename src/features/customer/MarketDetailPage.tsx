@@ -8,7 +8,9 @@ import {
   EmptyState,
   MarketFeedLabel,
 } from '../../components/ui/CommonPrimitives';
+import { OrderBook } from '../../components/ui/OrderBook';
 import { PriceChart } from '../../components/ui/PriceChart';
+import { TradeHistoryPanel } from '../../components/ui/TradeHistoryPanel';
 import { useAppState } from '../../context/AppStateContext';
 import { formatCryptoPrice } from '../../utils/tradingMath';
 
@@ -76,25 +78,25 @@ export const MarketDetailPage: React.FC = () => {
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 font-mono-num">
             <div>
-              <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">Last Price</p>
+              <p className="text-[11px] font-sans text-[#686D76] dark:text-[#7E828A]">Last Price</p>
               <p className="text-base font-bold">
                 {unavailable ? 'Feed Offline' : `${formatCryptoPrice(market.price)} USDT`}
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">24H High</p>
+              <p className="text-[11px] font-sans text-[#686D76] dark:text-[#7E828A]">24H High</p>
               <p className="text-sm font-semibold">
                 {unavailable ? '—' : formatCryptoPrice(market.high24h)}
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">24H Low</p>
+              <p className="text-[11px] font-sans text-[#686D76] dark:text-[#7E828A]">24H Low</p>
               <p className="text-sm font-semibold">
                 {unavailable ? '—' : formatCryptoPrice(market.low24h)}
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">24H Volume</p>
+              <p className="text-[11px] font-sans text-[#686D76] dark:text-[#7E828A]">24H Volume</p>
               <p className="text-sm font-semibold">
                 {unavailable
                   ? '—'
@@ -104,13 +106,23 @@ export const MarketDetailPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Interactive Chart */}
-        <PriceChart
-          symbol={decodedSymbol}
-          candles={market.candles}
-          currentPrice={market.price}
-          changePct={market.change24hPct}
-        />
+        {/* Chart + Live Order Book */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-8">
+            <PriceChart
+              symbol={decodedSymbol}
+              candles={market.candles}
+              currentPrice={market.price}
+              changePct={market.change24hPct}
+            />
+          </div>
+          <div className="lg:col-span-4">
+            <OrderBook symbol={decodedSymbol} currentPrice={market.price} />
+          </div>
+        </div>
+
+        {/* Recent Market Trades Tape */}
+        <TradeHistoryPanel symbol={decodedSymbol} showAccountTabs={false} />
 
         {/* Pair Info & Direct Trade Actions */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">

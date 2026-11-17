@@ -53,31 +53,27 @@ const AuthShell: React.FC<{
 };
 
 export const LoginPage: React.FC = () => {
-  const { login, userRoles, profiles } = useAppState();
+  const { login } = useAppState();
   const navigate = useNavigate();
 
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = login(identifier, password);
+    setSubmitting(true);
+    setError(null);
+    const res = await login(identifier, password);
+    setSubmitting(false);
     if (!res.ok) {
       setError(res.message);
       return;
     }
-    setError(null);
-    const trimmed = identifier.trim().toLowerCase();
-    const matched = profiles.find(
-      (p) =>
-        p.email.toLowerCase() === trimmed ||
-        p.publicUserId === trimmed ||
-        p.phone.toLowerCase() === trimmed
-    );
-    const role = matched ? userRoles.find((r) => r.userId === matched.id)?.role : 'customer';
+    const role = res.role ?? 'customer';
     const isAdminAccount =
       role === 'super_admin' ||
       role === 'operations_admin' ||
@@ -137,9 +133,10 @@ export const LoginPage: React.FC = () => {
 
         <button
           type="submit"
-          className="w-full h-12 rounded-full bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0] transition-colors"
+          disabled={submitting}
+          className="w-full h-12 rounded-full bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0] transition-colors disabled:opacity-60"
         >
-          Sign in
+          {submitting ? 'Signing in...' : 'Sign in'}
         </button>
 
         <label className="flex items-center gap-2.5 text-xs text-[#686D76] dark:text-[#9CA0A8] cursor-pointer">
@@ -180,12 +177,17 @@ export const RegisterPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fullName.trim() || !email.trim() || !phone.trim() || !password) {
+    if (!fullName.trim() || !email.trim() || !password) {
       setError('Please complete all required fields.');
+      return;
+    }
+    if (mode === 'mobile' && !phone.trim()) {
+      setError('Please enter your mobile number in international E.164 format (e.g. +15550102030).');
       return;
     }
     if (password.length < 8) {
@@ -196,18 +198,20 @@ export const RegisterPage: React.FC = () => {
       setError('Passwords do not match.');
       return;
     }
-    const res = register({
+    setSubmitting(true);
+    setError(null);
+    const res = await register({
       fullName,
       email,
-      phone,
+      phone: phone.trim() || undefined,
       password,
       preferredLanguage: language,
     });
+    setSubmitting(false);
     if (!res.ok) {
       setError(res.message);
       return;
     }
-    setError(null);
     navigate('/dashboard');
   };
 
@@ -270,7 +274,7 @@ export const RegisterPage: React.FC = () => {
 
         <div>
           <label htmlFor="reg-phone" className="block text-sm font-medium mb-1.5">
-            Mobile Number ({mode === 'mobile' ? 'Primary' : 'Security Contact'})
+            Mobile Number ({mode === 'mobile' ? 'Required E.164' : 'Optional E.164'})
           </label>
           <input
             id="reg-phone"
@@ -331,9 +335,10 @@ export const RegisterPage: React.FC = () => {
 
         <button
           type="submit"
-          className="w-full h-12 rounded-full bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0]"
+          disabled={submitting}
+          className="w-full h-12 rounded-full bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0] disabled:opacity-60"
         >
-          Create New Account
+          {submitting ? 'Creating Account...' : 'Create New Account'}
         </button>
 
         <p className="text-center text-xs text-[#686D76] dark:text-[#7E828A]">
@@ -351,20 +356,28 @@ export const RegisterPage: React.FC = () => {
 };
 
 export const ForgotPasswordPage: React.FC = () => {
+  const { recoverPassword } = useAppState();
   const [account, setAccount] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!account.trim()) {
       setError('Enter your account email, phone, or User ID.');
       return;
     }
+    setSubmitting(true);
     setError(null);
-    setNotice(
-      'Password recovery delivery requires an active transactional email provider configuration.'
-    );
+    setNotice(null);
+    const res = await recoverPassword(account);
+    setSubmitting(false);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    setNotice(res.message);
   };
 
   return (
@@ -390,16 +403,17 @@ export const ForgotPasswordPage: React.FC = () => {
           </p>
         )}
         {notice && (
-          <p role="status" className="text-xs font-medium text-[#D97706]">
+          <p role="status" className="text-xs font-medium text-[#10C478]">
             {notice}
           </p>
         )}
 
         <button
           type="submit"
-          className="w-full h-12 rounded-full bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0]"
+          disabled={submitting}
+          className="w-full h-12 rounded-full bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0] disabled:opacity-60"
         >
-          Request Reset Link
+          {submitting ? 'Sending...' : 'Request Reset Link'}
         </button>
 
         <div className="text-center pt-1">

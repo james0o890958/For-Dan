@@ -80,8 +80,14 @@ export function calculateSpotBuyPreview(params: {
     executionPrice,
   };
 
-  if (accountStatus === 'suspended') {
-    return { ...empty, error: 'Account is suspended. Trading is disabled.' };
+  if (accountStatus !== 'active') {
+    return {
+      ...empty,
+      error:
+        accountStatus === 'closed'
+          ? 'Account is closed. Trading is disabled.'
+          : 'Account is suspended. Trading is disabled.',
+    };
   }
   if (kycStatus !== 'approved') {
     return { ...empty, error: 'Approved KYC verification is required before trading.' };
@@ -158,8 +164,14 @@ export function calculateSpotSellPreview(params: {
     executionPrice,
   };
 
-  if (accountStatus === 'suspended') {
-    return { ...empty, error: 'Account is suspended. Trading is disabled.' };
+  if (accountStatus !== 'active') {
+    return {
+      ...empty,
+      error:
+        accountStatus === 'closed'
+          ? 'Account is closed. Trading is disabled.'
+          : 'Account is suspended. Trading is disabled.',
+    };
   }
   if (kycStatus !== 'approved') {
     return { ...empty, error: 'Approved KYC verification is required before trading.' };

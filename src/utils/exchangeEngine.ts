@@ -74,8 +74,14 @@ export function previewWithdrawal(params: {
     requiredApprovals: 1,
   };
 
-  if (params.accountStatus === 'suspended') {
-    return { ...empty, error: 'Account is suspended. Withdrawals are disabled.' };
+  if (params.accountStatus !== 'active') {
+    return {
+      ...empty,
+      error:
+        params.accountStatus === 'closed'
+          ? 'Account is closed. Withdrawals are disabled.'
+          : 'Account is suspended. Withdrawals are disabled.',
+    };
   }
   if (params.kycStatus !== 'approved') {
     return { ...empty, error: 'Approved KYC verification is required before withdrawing.' };

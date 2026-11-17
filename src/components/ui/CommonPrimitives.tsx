@@ -97,15 +97,16 @@ export const KycStatusLabel: React.FC<{ status: KycStatus }> = ({ status }) => {
   return <span className={`text-xs font-semibold ${info.color}`}>{info.label}</span>;
 };
 
-export const AccountStatusLabel: React.FC<{ status: AccountStatus }> = ({ status }) => (
-  <span
-    className={`text-xs font-semibold ${
-      status === 'active' ? 'text-[#10C478]' : 'text-[#F0525E]'
-    }`}
-  >
-    {status === 'active' ? 'Active' : 'Suspended'}
-  </span>
-);
+export const AccountStatusLabel: React.FC<{ status: AccountStatus }> = ({ status }) => {
+  const color =
+    status === 'active'
+      ? 'text-[#10C478]'
+      : status === 'closed'
+        ? 'text-[#686D76] dark:text-[#9CA0A8]'
+        : 'text-[#F0525E]';
+  const label = status === 'active' ? 'Active' : status === 'closed' ? 'Closed' : 'Suspended';
+  return <span className={`text-xs font-semibold ${color}`}>{label}</span>;
+};
 
 export const DepositStatusLabel: React.FC<{ status: DepositStatus }> = ({ status }) => {
   const map: Record<DepositStatus, { label: string; color: string }> = {

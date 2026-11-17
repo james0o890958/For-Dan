@@ -180,8 +180,8 @@ export const AdminLayout: React.FC<{
               </Link>
               <button
                 type="button"
-                onClick={() => {
-                  logout();
+                onClick={async () => {
+                  await logout();
                   setDrawerOpen(false);
                   navigate('/login');
                 }}
@@ -224,8 +224,8 @@ export const AdminLayout: React.FC<{
             </button>
             <button
               type="button"
-              onClick={() => {
-                logout();
+              onClick={async () => {
+                await logout();
                 navigate('/login');
               }}
               aria-label="Sign out"

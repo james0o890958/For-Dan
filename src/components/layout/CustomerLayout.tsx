@@ -197,8 +197,8 @@ export const CustomerLayout: React.FC<{
               {currentProfile ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    logout();
+                  onClick={async () => {
+                    await logout();
                     setDrawerOpen(false);
                     navigate('/login');
                   }}

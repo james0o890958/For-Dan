@@ -11,7 +11,7 @@ import type {
 export interface RegisterInput {
   fullName: string;
   email: string;
-  phone: string;
+  phone?: string;
   password: string;
   preferredLanguage: string;
 }

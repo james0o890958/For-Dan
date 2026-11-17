@@ -86,14 +86,17 @@ interface AppStateContextValue {
   hideBalances: boolean;
   toggleHideBalances: () => void;
 
-  // Auth & Role
+  // Auth & Role (backed by Supabase Auth & PostgreSQL user_roles)
   currentUserId: string | null;
   currentProfile: Profile | null;
   currentRole: AppRole;
   isAdmin: boolean;
-  login: (identifier: string, password: string) => ActionResult;
-  register: (input: RegisterInput) => ActionResult;
-  logout: () => void;
+  authLoading: boolean;
+  login: (identifier: string, password: string) => Promise<ActionResult & { role?: AppRole }>;
+  register: (input: RegisterInput) => Promise<ActionResult>;
+  logout: () => Promise<void>;
+  recoverPassword: (identifier: string) => Promise<ActionResult>;
+  updatePassword: (currentPassword: string, newPassword: string) => Promise<ActionResult>;
 
   // Collections
   profiles: Profile[];
@@ -132,7 +135,7 @@ interface AppStateContextValue {
   unreadNotificationsCount: number;
 
   // Customer actions
-  updateCustomerProfile: (updates: { fullName: string; phone: string; preferredLanguage: string }) => ActionResult;
+  updateCustomerProfile: (updates: { fullName: string; phone?: string; preferredLanguage: string }) => ActionResult;
   toggleTwoFactor: (enabled: boolean) => ActionResult;
   submitKyc: (payload: {
     fullName: string;
@@ -191,8 +194,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [hideBalances, setHideBalances] = useState<boolean>(false);
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [profiles, setProfiles] = useState<Profile[]>(INITIAL_PROFILES);
-  const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [userRoles, setUserRoles] = useState<UserRoleRecord[]>(INITIAL_USER_ROLES);
   const [assets, setAssets] = useState<Asset[]>(INITIAL_ASSETS);
   const [networks, setNetworks] = useState<NetworkConfig[]>(INITIAL_NETWORKS);
@@ -296,101 +299,270 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setAuditLogs((prev) => [entry, ...prev]);
   };
 
-  const login = (identifier: string, password: string): ActionResult => {
-    const trimmed = identifier.trim().toLowerCase();
-    if (!trimmed || !password.trim()) {
+  const hydrateAuthenticatedSnapshot = (snapshot: {
+    profile: Profile;
+    role: AppRole;
+    balances?: WalletBalance[];
+  }) => {
+    setProfiles((prev) => {
+      const exists = prev.some((p) => p.id === snapshot.profile.id);
+      return exists
+        ? prev.map((p) => (p.id === snapshot.profile.id ? snapshot.profile : p))
+        : [snapshot.profile, ...prev];
+    });
+
+    setUserRoles((prev) => {
+      const filtered = prev.filter((r) => r.userId !== snapshot.profile.id);
+      return [
+        ...filtered,
+        {
+          id: `role-${snapshot.profile.id}`,
+          userId: snapshot.profile.id,
+          role: snapshot.role,
+          assignedBy: 'database',
+          createdAt: snapshot.profile.createdAt,
+        },
+      ];
+    });
+
+    if (Array.isArray(snapshot.balances)) {
+      setWalletBalances((prev) => {
+        const others = prev.filter((b) => b.userId !== snapshot.profile.id);
+        return [...others, ...snapshot.balances!];
+      });
+    }
+
+    setCurrentUserId(snapshot.profile.id);
+    setLanguageState(snapshot.profile.preferredLanguage);
+  };
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/session', { credentials: 'include' });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (active && json?.ok && json?.authenticated && json?.data?.profile) {
+          hydrateAuthenticatedSnapshot(json.data);
+        }
+      } catch {
+        // Ignore network failure during unauthenticated startup
+      } finally {
+        if (active) setAuthLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const syncTickers = async () => {
+      try {
+        const res = await fetch('/api/markets/tickers');
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!active || !json?.ok || !Array.isArray(json?.data?.tickers)) return;
+
+        const incomingMap = new Map<
+          string,
+          {
+            symbol: string;
+            price: number;
+            change24hPct: number;
+            high24h: number;
+            low24h: number;
+            volume24h: number;
+            dataStatus: MarketDataStatus;
+            updatedAt: string;
+          }
+        >(json.data.tickers.map((t: { symbol: string; price: number; change24hPct: number; high24h: number; low24h: number; volume24h: number; dataStatus: MarketDataStatus; updatedAt: string }) => [t.symbol, t]));
+
+        setMarketPrices((prev) =>
+          prev.map((mp) => {
+            const fresh = incomingMap.get(mp.symbol);
+            if (!fresh || fresh.price <= 0) return mp;
+            return {
+              ...mp,
+              price: fresh.price,
+              change24hPct: fresh.change24hPct,
+              high24h: fresh.high24h,
+              low24h: fresh.low24h,
+              volume24h: fresh.volume24h,
+              dataStatus: fresh.dataStatus,
+              updatedAt: fresh.updatedAt,
+            };
+          })
+        );
+
+        setMarketSettings((prev) => ({
+          ...prev,
+          providerName: json.data.providerName || 'Spot Market Feed',
+          providerStatus: json.data.dataStatus === 'live' ? 'live' : prev.providerStatus,
+          lastSyncedAt: json.data.syncedAt || new Date().toISOString(),
+        }));
+      } catch {
+        // Keep existing feed status; never fabricate prices
+      }
+    };
+
+    syncTickers();
+    const timer = window.setInterval(syncTickers, 10_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const login = async (
+    identifier: string,
+    password: string
+  ): Promise<ActionResult & { role?: AppRole }> => {
+    if (!identifier.trim() || !password) {
       return {
         ok: false,
         message: 'Please enter your email, phone, or User ID and password.',
       };
     }
-    const found = profiles.find(
-      (p) =>
-        p.email.toLowerCase() === trimmed ||
-        p.publicUserId === trimmed ||
-        p.phone.toLowerCase() === trimmed
-    );
-    if (!found) {
-      return { ok: false, message: 'Invalid credentials or account not registered.' };
-    }
-    const storedPwd = credentials[found.id];
-    if (storedPwd && storedPwd !== password) {
-      return { ok: false, message: 'Invalid credentials.' };
-    }
-    if (!storedPwd && password.length < 8) {
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ identifier: identifier.trim(), password }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok || !json?.data?.profile) {
+        return {
+          ok: false,
+          message: json?.message || 'Unable to sign in with the provided credentials.',
+        };
+      }
+      hydrateAuthenticatedSnapshot(json.data);
+      return {
+        ok: true,
+        message: json.message || 'Signed in successfully.',
+        role: json.data.role,
+      };
+    } catch {
       return {
         ok: false,
-        message: 'Invalid credentials. Operator passwords require at least 8 characters.',
+        message: 'Authentication service is unreachable.',
       };
     }
-    setCurrentUserId(found.id);
-    setLanguageState(found.preferredLanguage);
-    return { ok: true, message: 'Signed in successfully.' };
   };
 
-  const register = (input: RegisterInput): ActionResult => {
+  const register = async (input: RegisterInput): Promise<ActionResult> => {
     const email = input.email.trim().toLowerCase();
-    if (!input.fullName.trim() || !email || !input.phone.trim() || input.password.length < 8) {
+    const rawPhone = typeof input.phone === 'string' ? input.phone.trim() : '';
+    if (!input.fullName.trim() || !email || input.password.length < 8) {
       return {
         ok: false,
-        message: 'Full name, email, mobile number, and password (min 8 characters) are required.',
+        message: 'Full name, email, and password (min 8 characters) are required.',
       };
     }
-    if (profiles.some((p) => p.email.toLowerCase() === email)) {
-      return { ok: false, message: 'An account with this email already exists.' };
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          fullName: input.fullName.trim(),
+          email,
+          phone: rawPhone || undefined,
+          password: input.password,
+          preferredLanguage: input.preferredLanguage || 'English',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.ok || !json?.data?.profile) {
+        return {
+          ok: false,
+          message: json?.message || 'Unable to register account.',
+        };
+      }
+      hydrateAuthenticatedSnapshot(json.data);
+      return {
+        ok: true,
+        message: json.message || 'Account created with 0.00 starting balances.',
+      };
+    } catch {
+      return {
+        ok: false,
+        message: 'Registration service is unreachable.',
+      };
     }
-    const newId = exchangeService.generateId('cust');
-    const publicUserId = exchangeService.generatePublicUserId(profiles);
-    const now = new Date().toISOString();
-
-    const newProfile: Profile = {
-      id: newId,
-      publicUserId,
-      email,
-      fullName: input.fullName.trim(),
-      phone: input.phone.trim(),
-      twoFactorEnabled: false,
-      accountStatus: 'active',
-      kycStatus: 'not_submitted',
-      preferredLanguage: input.preferredLanguage || 'English',
-      createdAt: now,
-    };
-
-    const newRole: UserRoleRecord = {
-      id: exchangeService.generateId('role'),
-      userId: newId,
-      role: 'customer',
-      assignedBy: 'system',
-      createdAt: now,
-    };
-
-    // Every new account initializes strictly with 0 available and 0 reserved across supported assets
-    const zeroBalances: WalletBalance[] = assets
-      .filter((a) => a.isEnabled)
-      .map((a) => ({
-        id: exchangeService.generateId('bal'),
-        userId: newId,
-        assetSymbol: a.symbol,
-        available: 0,
-        reserved: 0,
-        updatedAt: now,
-      }));
-
-    setProfiles((prev) => [newProfile, ...prev]);
-    setCredentials((prev) => ({ ...prev, [newId]: input.password }));
-    setUserRoles((prev) => [...prev, newRole]);
-    setWalletBalances((prev) => [...prev, ...zeroBalances]);
-    setCurrentUserId(newId);
-    setLanguageState(newProfile.preferredLanguage);
-
-    return {
-      ok: true,
-      message: `Account created with User ID ${publicUserId}. Starting balances are 0.00.`,
-    };
   };
 
-  const logout = () => {
+  const logout = async (): Promise<void> => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch {
+      // Clear local session state regardless of network status
+    }
     setCurrentUserId(null);
+  };
+
+  const recoverPassword = async (identifier: string): Promise<ActionResult> => {
+    if (!identifier.trim()) {
+      return { ok: false, message: 'Enter your account email, phone, or User ID.' };
+    }
+    try {
+      const res = await fetch('/api/auth/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: identifier.trim() }),
+      });
+      const json = await res.json();
+      return {
+        ok: Boolean(res.ok && json?.ok),
+        message:
+          json?.message ||
+          'Unable to process password recovery request.',
+      };
+    } catch {
+      return {
+        ok: false,
+        message: 'Password recovery service is unreachable.',
+      };
+    }
+  };
+
+  const updatePassword = async (
+    currentPassword: string,
+    newPassword: string
+  ): Promise<ActionResult> => {
+    if (!currentPassword || newPassword.length < 8) {
+      return {
+        ok: false,
+        message: 'Enter your current password and a new password (min 8 characters).',
+      };
+    }
+    try {
+      const res = await fetch('/api/auth/update-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const json = await res.json();
+      return {
+        ok: Boolean(res.ok && json?.ok),
+        message: json?.message || 'Unable to update password.',
+      };
+    } catch {
+      return {
+        ok: false,
+        message: 'Password update service is unreachable.',
+      };
+    }
   };
 
   const currentUserBalances = useMemo(
@@ -465,12 +637,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const updateCustomerProfile = (updates: {
     fullName: string;
-    phone: string;
+    phone?: string;
     preferredLanguage: string;
   }): ActionResult => {
     if (!currentProfile) return { ok: false, message: 'Authentication required.' };
-    if (!updates.fullName.trim() || !updates.phone.trim()) {
-      return { ok: false, message: 'Name and phone number cannot be empty.' };
+    if (!updates.fullName.trim()) {
+      return { ok: false, message: 'Full name cannot be empty.' };
+    }
+    const cleanPhone = typeof updates.phone === 'string' ? updates.phone.replace(/[\s().-]+/g, '').trim() : '';
+    if (cleanPhone && !/^\+[1-9][0-9]{6,14}$/.test(cleanPhone)) {
+      return { ok: false, message: 'Phone number must be in international E.164 format (e.g. +15550102030).' };
     }
     setProfiles((prev) =>
       prev.map((p) =>
@@ -478,7 +654,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           ? {
               ...p,
               fullName: updates.fullName.trim(),
-              phone: updates.phone.trim(),
+              phone: cleanPhone || null,
               preferredLanguage: updates.preferredLanguage,
             }
           : p
@@ -540,8 +716,14 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     networkCode: string;
   }): Promise<ActionResult> => {
     if (!currentProfile) return { ok: false, message: 'Please sign in first.' };
-    if (currentProfile.accountStatus === 'suspended') {
-      return { ok: false, message: 'Account is suspended. Deposits are disabled.' };
+    if (currentProfile.accountStatus !== 'active') {
+      return {
+        ok: false,
+        message:
+          currentProfile.accountStatus === 'closed'
+            ? 'Account is closed. Deposits are disabled.'
+            : 'Account is suspended. Deposits are disabled.',
+      };
     }
     if (currentProfile.kycStatus !== 'approved') {
       return { ok: false, message: 'Approved KYC verification is required before generating deposit addresses.' };
@@ -1405,9 +1587,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     currentProfile,
     currentRole,
     isAdmin,
+    authLoading,
     login,
     register,
     logout,
+    recoverPassword,
+    updatePassword,
     profiles,
     customerProfiles,
     userRoles,

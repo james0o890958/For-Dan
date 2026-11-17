@@ -171,6 +171,7 @@ export const SettingsPage: React.FC = () => {
     updateCustomerProfile,
     toggleTwoFactor,
     logout,
+    updatePassword,
     isAdmin,
   } = useAppState();
   const navigate = useNavigate();
@@ -214,15 +215,18 @@ export const SettingsPage: React.FC = () => {
     setProfileMsg(res.message);
   };
 
-  const handlePasswordChange = (e: React.FormEvent) => {
+  const handlePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentPwd || newPwd.length < 8) {
       setPwdMsg('Enter your current password and a new password (min 8 characters).');
       return;
     }
-    setCurrentPwd('');
-    setNewPwd('');
-    setPwdMsg('Password rotation requires an active backend authentication session.');
+    const res = await updatePassword(currentPwd, newPwd);
+    if (res.ok) {
+      setCurrentPwd('');
+      setNewPwd('');
+    }
+    setPwdMsg(res.message);
   };
 
   return (
@@ -437,8 +441,8 @@ export const SettingsPage: React.FC = () => {
 
         <button
           type="button"
-          onClick={() => {
-            logout();
+          onClick={async () => {
+            await logout();
             navigate('/login');
           }}
           className="w-full h-12 rounded-full bg-[#E8EAEE] dark:bg-[#2C2D30] text-sm font-semibold hover:opacity-90"
