@@ -31,6 +31,9 @@ export const LandingPage: React.FC = () => {
             aria-label="Public navigation"
             className="hidden md:flex items-center gap-6 text-sm font-medium text-[#4B5059] dark:text-[#9CA0A8]"
           >
+            <Link to="/overview" className="hover:text-[#111214] dark:hover:text-white whitespace-nowrap shrink-0">
+              Overview
+            </Link>
             <Link to="/markets" className="hover:text-[#111214] dark:hover:text-white whitespace-nowrap shrink-0">
               Markets
             </Link>
@@ -49,10 +52,10 @@ export const LandingPage: React.FC = () => {
               {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
             <Link
-              to={currentProfile ? (isAdmin ? '/admin' : '/dashboard') : '/login'}
+              to={currentProfile ? (isAdmin ? '/admin' : '/overview') : '/login'}
               className="px-4 py-2 rounded-full bg-[#004AE2] text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 hover:bg-[#003ec0]"
             >
-              {currentProfile ? (isAdmin ? 'Admin Console' : 'Dashboard') : 'Sign in'}
+              {currentProfile ? (isAdmin ? 'Admin Console' : 'Overview') : 'Sign in'}
             </Link>
           </div>
         </div>

@@ -259,3 +259,346 @@ test('migration 003 restricts sensitive columns on profiles, kyc_submissions, an
   assert.match(m003, /ALTER TABLE public\.schema_migrations ENABLE ROW LEVEL SECURITY/i);
   assert.doesNotMatch(m003, /GRANT\s+(?:ALL|INSERT|DELETE)\b/i);
 });
+
+test('Phase 1 (006): passes structural SQL validation, ordering after 005, and search_path pinning without altering 001-005', async () => {
+  const m006 = await readMigration('006_security_and_rls_hardening.sql');
+  assert.ok(m006.trim().length > 0, '006_security_and_rls_hardening.sql must not be empty');
+  checkBalancedDelimiters(m006);
+
+  const { listSqlMigrationFiles } = await import('./migrate');
+  const files = await listSqlMigrationFiles();
+  assert.deepEqual(files, [
+    '001_core_exchange_schema.sql',
+    '002_company_inventory_treasury_pricing.sql',
+    '003_rls_and_permissions.sql',
+    '004_auth_bootstrap_and_catalog.sql',
+    '005_security_events_and_ip_intelligence.sql',
+    '006_security_and_rls_hardening.sql',
+    '007_account_closure_concurrency_and_approval_hardening.sql',
+    '008_closed_account_integrity_hardening.sql',
+  ]);
+
+  for (const fn of [
+    'is_active_account',
+    'guard_auth_security_events_immutability',
+    'anonymize_expired_auth_security_events',
+    'close_customer_account',
+    'enforce_treasury_funding_approval_rules',
+  ]) {
+    assert.match(
+      m006,
+      new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}[\\s\\S]*?SET search_path = public`, 'i')
+    );
+  }
+});
+
+test('Phase 1 (006-A): anon catalog policies allow enabled assets/pairs without calling is_admin_user()', async () => {
+  const m006 = await readMigration('006_security_and_rls_hardening.sql');
+
+  assert.match(m006, /DROP POLICY IF EXISTS assets_public_read ON public\.assets;/i);
+  assert.match(
+    m006,
+    /CREATE POLICY assets_anon_read ON public\.assets\s+FOR SELECT TO anon\s+USING \(is_enabled = TRUE\);/i
+  );
+  assert.match(
+    m006,
+    /CREATE POLICY assets_authenticated_read ON public\.assets\s+FOR SELECT TO authenticated\s+USING \(is_enabled = TRUE OR public\.is_admin_user\(\)\);/i
+  );
+
+  assert.match(m006, /DROP POLICY IF EXISTS pairs_public_read ON public\.trading_pairs;/i);
+  assert.match(
+    m006,
+    /CREATE POLICY pairs_anon_read ON public\.trading_pairs\s+FOR SELECT TO anon\s+USING \(is_enabled = TRUE\);/i
+  );
+  assert.match(
+    m006,
+    /CREATE POLICY pairs_authenticated_read ON public\.trading_pairs\s+FOR SELECT TO authenticated\s+USING \(is_enabled = TRUE OR public\.is_admin_user\(\)\);/i
+  );
+});
+
+test('Phase 1 (006-B): enforces active account status across customer-owned RLS policies while preserving admin role helpers', async () => {
+  const m006 = await readMigration('006_security_and_rls_hardening.sql');
+
+  assert.match(
+    m006,
+    /CREATE OR REPLACE FUNCTION public\.is_active_account\(\)[\s\S]*?p\.account_status = 'active'/i
+  );
+  assert.match(m006, /REVOKE ALL ON FUNCTION public\.is_active_account\(\) FROM PUBLIC, anon, authenticated;/i);
+  assert.match(m006, /GRANT EXECUTE ON FUNCTION public\.is_active_account\(\) TO authenticated;/i);
+
+  assert.match(
+    m006,
+    /CREATE POLICY profiles_select_own ON public\.profiles[\s\S]*?USING \(\(auth\.uid\(\) = id AND account_status = 'active'\) OR public\.is_admin_user\(\)\)/i
+  );
+  assert.match(
+    m006,
+    /CREATE POLICY user_roles_select_own ON public\.user_roles[\s\S]*?USING \(\(auth\.uid\(\) = user_id AND public\.is_active_account\(\)\) OR public\.is_super_admin\(\)\)/i
+  );
+  assert.match(
+    m006,
+    /CREATE POLICY kyc_select_own ON public\.kyc_submissions[\s\S]*?USING \(\(auth\.uid\(\) = user_id AND public\.is_active_account\(\)\) OR public\.can_read_kyc_records\(\)\)/i
+  );
+
+  for (const [policy, table] of [
+    ['wallet_balances_select_own', 'wallet_balances'],
+    ['deposit_addresses_select_own', 'deposit_addresses'],
+    ['deposits_select_own', 'deposits'],
+    ['withdrawals_select_own', 'withdrawals'],
+    ['spot_orders_select_own', 'spot_orders'],
+    ['trades_select_own', 'trades'],
+    ['ledger_tx_select_own', 'ledger_transactions'],
+    ['ledger_entries_select_own', 'ledger_entries'],
+  ]) {
+    assert.match(
+      m006,
+      new RegExp(
+        `CREATE POLICY ${policy} ON public\\.${table}[\\s\\S]*?USING \\(\\(auth\\.uid\\(\\) = user_id AND public\\.is_active_account\\(\\)\\) OR public\\.can_read_financial_records\\(\\)\\)`,
+        'i'
+      )
+    );
+  }
+
+  assert.match(
+    m006,
+    /CREATE POLICY notifications_select_own ON public\.notifications[\s\S]*?USING \(auth\.uid\(\) = user_id AND public\.is_active_account\(\)\)/i
+  );
+  assert.match(
+    m006,
+    /CREATE POLICY notifications_update_own ON public\.notifications[\s\S]*?USING \(auth\.uid\(\) = user_id AND public\.is_active_account\(\)\)\s+WITH CHECK \(auth\.uid\(\) = user_id AND public\.is_active_account\(\)\)/i
+  );
+});
+
+test('Phase 1 (006-C/D/E): fixes security-event retention guard, account closure checks, and treasury decision_note immutability', async () => {
+  const m006 = await readMigration('006_security_and_rls_hardening.sql');
+
+  // 006-C: NULL-safe IS DISTINCT FROM + exception-safe retention op restore + REVOKE
+  assert.match(
+    m006,
+    /IF current_setting\('exchange\.retention_op', true\) IS DISTINCT FROM 'anonymize_expired_security_events' THEN/i
+  );
+  assert.doesNotMatch(
+    m006,
+    /current_setting\('exchange\.retention_op', true\)\s*<>/i
+  );
+  assert.match(
+    m006,
+    /EXCEPTION\s+WHEN OTHERS THEN\s+PERFORM set_config\('exchange\.retention_op', COALESCE\(v_prev_retention_op, ''\), true\);\s+RAISE;/i
+  );
+  assert.match(
+    m006,
+    /REVOKE ALL ON FUNCTION public\.anonymize_expired_auth_security_events\(INTEGER\) FROM PUBLIC, anon, authenticated;/i
+  );
+
+  // 006-D: close_customer_account checks unresolved approval_requests and deactivates deposit_addresses
+  assert.match(
+    m006,
+    /FROM public\.approval_requests ar\s+WHERE ar\.status IN \('PENDING_SECOND_APPROVAL', 'APPROVED'\)/i
+  );
+  assert.match(
+    m006,
+    /UPDATE public\.deposit_addresses\s+SET is_active = FALSE\s+WHERE user_id = p_user_id/i
+  );
+
+  // 006-E: enforce_treasury_funding_approval_rules freezes decision_note on APPROVED -> CONFIRMED
+  assert.match(
+    m006,
+    /ELSIF OLD\.status = 'APPROVED' AND NEW\.status = 'CONFIRMED' THEN[\s\S]*?NEW\.decision_note IS DISTINCT FROM OLD\.decision_note[\s\S]*?NEW\.rejected_at IS NOT NULL/i
+  );
+});
+
+test('Phase 1.1 (007): static SQL verification of M-3 account-closure serialization/triggers, L-1 timestamp hygiene, catalog parity, and search_path pinning (not executed against live PostgreSQL)', async () => {
+  const m007 = await readMigration('007_account_closure_concurrency_and_approval_hardening.sql');
+  assert.ok(m007.trim().length > 0, '007 must not be empty');
+  checkBalancedDelimiters(m007);
+
+  for (const fn of [
+    'acquire_user_account_lock',
+    'guard_closed_account_obligation_write',
+    'guard_closed_account_approval_request_write',
+    'close_customer_account',
+    'enforce_approval_request_rules',
+  ]) {
+    assert.match(
+      m007,
+      new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}[\\s\\S]*?SET search_path = public`, 'i')
+    );
+    assert.match(
+      m007,
+      new RegExp(`REVOKE ALL ON FUNCTION public\\.${fn}\\([^)]*\\) FROM PUBLIC, anon, authenticated;`, 'i')
+    );
+  }
+
+  // M-3: close_customer_account serializes via acquire_user_account_lock + FOR UPDATE on profiles
+  assert.match(
+    m007,
+    /CREATE OR REPLACE FUNCTION public\.close_customer_account[\s\S]*?PERFORM public\.acquire_user_account_lock\(p_user_id\);[\s\S]*?FROM public\.profiles\s+WHERE id = p_user_id\s+FOR UPDATE;/i
+  );
+
+  // M-3: trigger guards enforce FOR KEY SHARE against profiles across all obligation tables
+  for (const table of [
+    'wallet_balances',
+    'deposits',
+    'withdrawals',
+    'spot_orders',
+    'deposit_addresses',
+  ]) {
+    assert.match(
+      m007,
+      new RegExp(
+        `CREATE TRIGGER trg_guard_closed_account_${table}\\s+BEFORE INSERT OR UPDATE ON public\\.${table}\\s+FOR EACH ROW EXECUTE FUNCTION public\\.guard_closed_account_obligation_write\\(\\);`,
+        'i'
+      )
+    );
+  }
+  assert.match(m007, /FROM public\.profiles p\s+WHERE p\.id = NEW\.user_id\s+FOR KEY SHARE;/i);
+  assert.match(
+    m007,
+    /CREATE TRIGGER trg_guard_closed_account_approval_requests\s+BEFORE INSERT OR UPDATE ON public\.approval_requests\s+FOR EACH ROW EXECUTE FUNCTION public\.guard_closed_account_approval_request_write\(\);/i
+  );
+  assert.match(m007, /ORDER BY p\.id ASC\s+FOR KEY SHARE OF p/i);
+
+  // L-1: approval_requests timestamp hygiene across CHECK constraint and trigger
+  assert.match(
+    m007,
+    /ADD CONSTRAINT chk_approval_requests_state_attribution CHECK[\s\S]*?status = 'EXECUTED'[\s\S]*?approved_at IS NOT NULL[\s\S]*?executed_at IS NOT NULL[\s\S]*?rejected_at IS NULL[\s\S]*?cancelled_at IS NULL/i
+  );
+  assert.match(
+    m007,
+    /NEW\.rejected_at IS NOT NULL[\s\S]*?NEW\.executed_at IS NOT NULL[\s\S]*?NEW\.cancelled_at IS NOT NULL[\s\S]*?NEW\.approved_at := COALESCE\(NEW\.approved_at, NOW\(\)\)/i
+  );
+  assert.match(
+    m007,
+    /ELSIF OLD\.status = 'APPROVED' AND NEW\.status = 'EXECUTED' THEN[\s\S]*?NEW\.approved_at IS DISTINCT FROM OLD\.approved_at[\s\S]*?NEW\.executed_at := COALESCE\(NEW\.executed_at, NOW\(\)\)/i
+  );
+
+  // Catalog parity for networks and market_prices
+  assert.match(m007, /CREATE POLICY networks_anon_read ON public\.networks\s+FOR SELECT TO anon/i);
+  assert.match(m007, /CREATE POLICY networks_authenticated_read ON public\.networks\s+FOR SELECT TO authenticated/i);
+  assert.match(m007, /CREATE POLICY market_prices_anon_read ON public\.market_prices\s+FOR SELECT TO anon/i);
+  assert.match(m007, /CREATE POLICY market_prices_authenticated_read ON public\.market_prices\s+FOR SELECT TO authenticated/i);
+});
+
+test('Phase 1.2 (008) [STATIC SQL]: passes structural validation, search_path pinning, and REVOKE hardening without modifying 001-007', async () => {
+  const m008 = await readMigration('008_closed_account_integrity_hardening.sql');
+  assert.ok(m008.trim().length > 0, '008_closed_account_integrity_hardening.sql must not be empty');
+  checkBalancedDelimiters(m008);
+
+  for (const fn of [
+    'guard_closed_account_obligation_write',
+    'enforce_approval_request_rules',
+    'guard_closed_account_approval_request_write',
+  ]) {
+    assert.match(
+      m008,
+      new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}[\\s\\S]*?SET search_path = public`, 'i')
+    );
+    assert.match(
+      m008,
+      new RegExp(`REVOKE ALL ON FUNCTION public\\.${fn}\\(\\) FROM PUBLIC, anon, authenticated;`, 'i')
+    );
+  }
+});
+
+test('Phase 1.2 (008) [STATIC SQL] CD-1 & CD-2: removes unguarded deposit_addresses bypass, freezes user_id, and locks profile before closed-account deactivation checks', async () => {
+  const m008 = await readMigration('008_closed_account_integrity_hardening.sql');
+  const guardMatch = m008.match(
+    /CREATE OR REPLACE FUNCTION public\.guard_closed_account_obligation_write\(\)[\s\S]*?\$\$;/i
+  );
+  assert.ok(guardMatch, 'guard_closed_account_obligation_write() must exist in 008');
+  const fnSql = guardMatch[0];
+
+  // CD-2: immutable ownership check on UPDATE
+  assert.match(
+    fnSql,
+    /IF TG_OP = 'UPDATE' AND NEW\.user_id IS DISTINCT FROM OLD\.user_id THEN[\s\S]*?RAISE EXCEPTION/i
+  );
+
+  // CD-1: unguarded early-return bypass from 007 must NOT be present
+  assert.doesNotMatch(
+    fnSql,
+    /IF TG_TABLE_NAME = 'deposit_addresses' AND TG_OP = 'UPDATE' AND NEW\.is_active = FALSE AND NEW\.user_id = OLD\.user_id THEN\s+RETURN NEW;\s+END IF;/i
+  );
+
+  // CD-1: profile FOR KEY SHARE lock must appear before deposit_addresses closed-account branch
+  const lockIdx = fnSql.search(/FROM public\.profiles p\s+WHERE p\.id = NEW\.user_id\s+FOR KEY SHARE;/i);
+  const closedBranchIdx = fnSql.search(/IF v_account_status = 'closed' THEN/i);
+  assert.ok(lockIdx > 0, 'FOR KEY SHARE lock on profiles must exist');
+  assert.ok(closedBranchIdx > lockIdx, 'FOR KEY SHARE lock must execute before closed-account status branch');
+
+  // CD-1: closed-account deposit_addresses allows ONLY active -> inactive deactivation with all protected columns unchanged
+  assert.match(
+    fnSql,
+    /ELSIF TG_TABLE_NAME = 'deposit_addresses' THEN[\s\S]*?IF TG_OP = 'UPDATE'[\s\S]*?OLD\.is_active = TRUE[\s\S]*?NEW\.is_active = FALSE[\s\S]*?NEW\.id IS NOT DISTINCT FROM OLD\.id[\s\S]*?NEW\.user_id IS NOT DISTINCT FROM OLD\.user_id[\s\S]*?NEW\.asset_symbol IS NOT DISTINCT FROM OLD\.asset_symbol[\s\S]*?NEW\.network_code IS NOT DISTINCT FROM OLD\.network_code[\s\S]*?NEW\.custody_vault_id IS NOT DISTINCT FROM OLD\.custody_vault_id[\s\S]*?NEW\.address IS NOT DISTINCT FROM OLD\.address[\s\S]*?NEW\.memo_or_tag IS NOT DISTINCT FROM OLD\.memo_or_tag[\s\S]*?NEW\.created_at IS NOT DISTINCT FROM OLD\.created_at/i
+  );
+
+  for (const table of [
+    'wallet_balances',
+    'deposits',
+    'withdrawals',
+    'spot_orders',
+    'deposit_addresses',
+  ]) {
+    assert.match(
+      m008,
+      new RegExp(
+        `CREATE TRIGGER trg_guard_closed_account_${table}\\s+BEFORE INSERT OR UPDATE ON public\\.${table}\\s+FOR EACH ROW EXECUTE FUNCTION public\\.guard_closed_account_obligation_write\\(\\);`,
+        'i'
+      )
+    );
+  }
+});
+
+test('Phase 1.2 (008) [STATIC SQL] CD-3: approval_requests triggers lock requester, acting admin, and targets in ascending UUID order before checking actor status', async () => {
+  const m008 = await readMigration('008_closed_account_integrity_hardening.sql');
+
+  const enforceMatch = m008.match(
+    /CREATE OR REPLACE FUNCTION public\.enforce_approval_request_rules\(\)[\s\S]*?\$\$;/i
+  );
+  assert.ok(enforceMatch, 'enforce_approval_request_rules() must exist in 008');
+  const enforceSql = enforceMatch[0];
+
+  // Must lock profiles in ascending order on INSERT (before v_requester_is_admin) and UPDATE (before v_actor_is_admin)
+  const lockMatches = [
+    ...enforceSql.matchAll(/ORDER BY p\.id ASC\s+FOR KEY SHARE OF p/gi),
+  ];
+  assert.equal(lockMatches.length, 2, 'enforce_approval_request_rules() must lock profiles in ascending UUID order on both INSERT and UPDATE');
+
+  const insertCheckIdx = enforceSql.search(/INTO v_requester_is_admin/i);
+  const updateActorCheckIdx = enforceSql.search(/INTO v_actor_is_admin,\s*v_actor_is_super_admin/i);
+  assert.ok((lockMatches[0].index ?? -1) < insertCheckIdx, 'INSERT profile lock must precede requester admin role check');
+  assert.ok((lockMatches[1].index ?? -1) < updateActorCheckIdx, 'UPDATE profile lock (including v_actor_id) must precede actor admin role check');
+  assert.match(enforceSql, /OR p\.id = v_actor_id/i);
+  assert.match(enforceSql, /IF v_actor_status IS DISTINCT FROM 'active' THEN/i);
+  assert.match(enforceSql, /IF v_requester_status IS DISTINCT FROM 'active' THEN/i);
+
+  // Preserves L-1 timestamp hygiene & maker-checker rules
+  assert.match(enforceSql, /NEW\.approved_at := COALESCE\(NEW\.approved_at, NOW\(\)\);/i);
+  assert.match(enforceSql, /NEW\.rejected_at := COALESCE\(NEW\.rejected_at, NOW\(\)\);/i);
+  assert.match(enforceSql, /NEW\.cancelled_at := COALESCE\(NEW\.cancelled_at, NOW\(\)\);/i);
+  assert.match(enforceSql, /NEW\.executed_at := COALESCE\(NEW\.executed_at, NOW\(\)\);/i);
+  assert.match(enforceSql, /NEW\.approved_at IS DISTINCT FROM OLD\.approved_at/i);
+
+  const guardMatch = m008.match(
+    /CREATE OR REPLACE FUNCTION public\.guard_closed_account_approval_request_write\(\)[\s\S]*?\$\$;/i
+  );
+  assert.ok(guardMatch, 'guard_closed_account_approval_request_write() must exist in 008');
+  const guardSql = guardMatch[0];
+
+  assert.match(guardSql, /WHEN 'APPROVED' THEN NEW\.approved_by/i);
+  assert.match(guardSql, /WHEN 'REJECTED' THEN NEW\.rejected_by/i);
+  assert.match(guardSql, /WHEN 'EXECUTED' THEN NEW\.executed_by/i);
+  assert.match(guardSql, /WHEN 'CANCELLED' THEN NEW\.cancelled_by/i);
+  assert.match(guardSql, /OR \(v_actor_id IS NOT NULL AND p\.id = v_actor_id\)/i);
+  assert.match(guardSql, /ORDER BY p\.id ASC\s+FOR KEY SHARE OF p/i);
+  assert.match(guardSql, /IF v_actor_id IS NOT NULL AND v_profile\.id = v_actor_id AND v_profile\.account_status <> 'active' THEN/i);
+
+  // Alphabetical trigger firing: trg_enforce_approval_request_rules fires before trg_guard_closed_account_approval_requests
+  assert.match(
+    m008,
+    /CREATE TRIGGER trg_enforce_approval_request_rules\s+BEFORE INSERT OR UPDATE ON public\.approval_requests\s+FOR EACH ROW EXECUTE FUNCTION public\.enforce_approval_request_rules\(\);/i
+  );
+  assert.match(
+    m008,
+    /CREATE TRIGGER trg_guard_closed_account_approval_requests\s+BEFORE INSERT OR UPDATE ON public\.approval_requests\s+FOR EACH ROW EXECUTE FUNCTION public\.guard_closed_account_approval_request_write\(\);/i
+  );
+});

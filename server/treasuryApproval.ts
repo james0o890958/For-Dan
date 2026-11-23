@@ -68,7 +68,7 @@ export function evaluateTreasuryFundingApproval(
     };
   }
 
-  if (input.targetStatus === 'REJECTED' && input.decisionNote !== undefined && !input.decisionNote?.trim()) {
+  if (input.targetStatus === 'REJECTED' && !input.decisionNote?.trim()) {
     return {
       allowed: false,
       code: 'DECISION_NOTE_REQUIRED',
@@ -138,6 +138,7 @@ export interface TransitionValidationResult {
     | 'INVALID_TRANSITION'
     | 'ATTRIBUTION_CONFLICT'
     | 'DECISION_NOTE_REQUIRED'
+    | 'MISSING_PRIOR_STATE'
     | 'ACTOR_SUSPENDED'
     | 'UNAUTHORIZED_ROLE'
     | 'SELF_APPROVAL_REQUIRES_SUPER_ADMIN'
@@ -156,19 +157,30 @@ export function validateTreasuryFundingTransition(params: {
     approvedBy: string | null;
     rejectedBy: string | null;
     confirmedBy: string | null;
+    decisionNote: string | null;
   };
   next: TreasuryFundingImmutableFields & {
     status: TreasuryFundingStatus;
     approvedBy: string | null;
     rejectedBy: string | null;
     confirmedBy: string | null;
-    decisionNote?: string | null;
+    decisionNote: string | null;
   };
   actorUserId: string;
   actorRole: AppRole;
   actorAccountStatus: AccountStatus;
 }): TransitionValidationResult {
   const { previous, next } = params;
+  if (
+    !Object.prototype.hasOwnProperty.call(previous, 'decisionNote') ||
+    previous.decisionNote === undefined
+  ) {
+    return {
+      allowed: false,
+      code: 'MISSING_PRIOR_STATE',
+      reason: 'Prior treasury funding decisionNote must be explicitly provided to validate transitions.',
+    };
+  }
   const immutablePairs: Array<[unknown, unknown]> = [
     [previous.id, next.id],
     [previous.treasuryWalletId, next.treasuryWalletId],
@@ -210,19 +222,19 @@ export function validateTreasuryFundingTransition(params: {
   }
 
   if (next.status === 'APPROVED') {
-    if (!next.approvedBy || next.confirmedBy || next.rejectedBy) {
+    if (!next.approvedBy || next.approvedBy !== params.actorUserId || next.confirmedBy || next.rejectedBy) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'APPROVED status requires approvedBy and null confirmedBy/rejectedBy.',
+        reason: 'APPROVED status requires approvedBy matching the acting admin and null confirmedBy/rejectedBy.',
       };
     }
   } else if (next.status === 'REJECTED') {
-    if (!next.rejectedBy || next.approvedBy || next.confirmedBy) {
+    if (!next.rejectedBy || next.rejectedBy !== params.actorUserId || next.approvedBy || next.confirmedBy) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'REJECTED status requires rejectedBy and null approvedBy/confirmedBy.',
+        reason: 'REJECTED status requires rejectedBy matching the acting admin and null approvedBy/confirmedBy.',
       };
     }
     if (!next.decisionNote?.trim()) {
@@ -233,11 +245,18 @@ export function validateTreasuryFundingTransition(params: {
       };
     }
   } else if (next.status === 'CONFIRMED') {
-    if (previous.approvedBy !== next.approvedBy || !next.confirmedBy || next.rejectedBy) {
+    if (previous.approvedBy !== next.approvedBy || !next.confirmedBy || next.confirmedBy !== params.actorUserId || next.rejectedBy) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'CONFIRMED status must preserve approvedBy and record confirmedBy.',
+        reason: 'CONFIRMED status must preserve approvedBy and record confirmedBy matching the acting admin.',
+      };
+    }
+    if (!sameImmutableValue(previous.decisionNote, next.decisionNote)) {
+      return {
+        allowed: false,
+        code: 'IMMUTABLE_FIELD_MODIFIED',
+        reason: 'Original approval decision_note cannot be modified during confirmation.',
       };
     }
   }
@@ -256,7 +275,7 @@ export function validateTreasuryFundingTransition(params: {
     actorAccountStatus: params.actorAccountStatus,
     targetStatus,
     requestType: 'treasury_funding',
-    decisionNote: next.decisionNote ?? 'verified',
+    decisionNote: targetStatus === 'REJECTED' ? next.decisionNote : (next.decisionNote ?? 'verified'),
   });
 
   if (!authCheck.allowed) {
@@ -293,6 +312,7 @@ export function validateApprovalRequestTransition(params: {
     rejectedBy: string | null;
     executedBy: string | null;
     cancelledBy: string | null;
+    decisionNote: string | null;
   };
   next: ApprovalRequestImmutableFields & {
     status: ApprovalRequestStatus;
@@ -300,13 +320,23 @@ export function validateApprovalRequestTransition(params: {
     rejectedBy: string | null;
     executedBy: string | null;
     cancelledBy: string | null;
-    decisionNote?: string | null;
+    decisionNote: string | null;
   };
   actorUserId: string;
   actorRole: AppRole;
   actorAccountStatus: AccountStatus;
 }): TransitionValidationResult {
   const { previous, next } = params;
+  if (
+    !Object.prototype.hasOwnProperty.call(previous, 'decisionNote') ||
+    previous.decisionNote === undefined
+  ) {
+    return {
+      allowed: false,
+      code: 'MISSING_PRIOR_STATE',
+      reason: 'Prior approval request decisionNote must be explicitly provided to validate transitions.',
+    };
+  }
   const immutablePairs: Array<[unknown, unknown]> = [
     [previous.id, next.id],
     [previous.requestType, next.requestType],
@@ -369,11 +399,17 @@ export function validateApprovalRequestTransition(params: {
   }
 
   if (next.status === 'CANCELLED') {
-    if (!next.cancelledBy || next.approvedBy || next.rejectedBy || next.executedBy) {
+    if (
+      !next.cancelledBy ||
+      next.cancelledBy !== params.actorUserId ||
+      next.approvedBy ||
+      next.rejectedBy ||
+      next.executedBy
+    ) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'CANCELLED status requires cancelledBy and null decision/execution fields.',
+        reason: 'CANCELLED status requires cancelledBy matching the acting admin and null decision/execution fields.',
       };
     }
     if (params.actorUserId !== previous.requestedBy && params.actorRole !== 'super_admin') {
@@ -391,11 +427,17 @@ export function validateApprovalRequestTransition(params: {
   }
 
   if (next.status === 'REJECTED') {
-    if (!next.rejectedBy || next.approvedBy || next.executedBy || next.cancelledBy) {
+    if (
+      !next.rejectedBy ||
+      next.rejectedBy !== params.actorUserId ||
+      next.approvedBy ||
+      next.executedBy ||
+      next.cancelledBy
+    ) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'REJECTED status requires rejectedBy and null approvedBy/executedBy/cancelledBy.',
+        reason: 'REJECTED status requires rejectedBy matching the acting admin and null approvedBy/executedBy/cancelledBy.',
       };
     }
     if (!next.decisionNote?.trim()) {
@@ -406,19 +448,38 @@ export function validateApprovalRequestTransition(params: {
       };
     }
   } else if (next.status === 'APPROVED') {
-    if (!next.approvedBy || next.rejectedBy || next.executedBy || next.cancelledBy) {
+    if (
+      !next.approvedBy ||
+      next.approvedBy !== params.actorUserId ||
+      next.rejectedBy ||
+      next.executedBy ||
+      next.cancelledBy
+    ) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'APPROVED status requires approvedBy and null rejectedBy/executedBy/cancelledBy.',
+        reason: 'APPROVED status requires approvedBy matching the acting admin and null rejectedBy/executedBy/cancelledBy.',
       };
     }
   } else if (next.status === 'EXECUTED') {
-    if (previous.approvedBy !== next.approvedBy || !next.executedBy || next.rejectedBy || next.cancelledBy) {
+    if (
+      previous.approvedBy !== next.approvedBy ||
+      !next.executedBy ||
+      next.executedBy !== params.actorUserId ||
+      next.rejectedBy ||
+      next.cancelledBy
+    ) {
       return {
         allowed: false,
         code: 'ATTRIBUTION_CONFLICT',
-        reason: 'EXECUTED status must preserve approvedBy and record executedBy.',
+        reason: 'EXECUTED status must preserve approvedBy and record executedBy matching the acting admin.',
+      };
+    }
+    if (!sameImmutableValue(previous.decisionNote, next.decisionNote)) {
+      return {
+        allowed: false,
+        code: 'IMMUTABLE_FIELD_MODIFIED',
+        reason: 'Original approval decision_note cannot be altered during execution.',
       };
     }
   }
@@ -432,7 +493,7 @@ export function validateApprovalRequestTransition(params: {
     actorAccountStatus: params.actorAccountStatus,
     targetStatus: decisionAction,
     requestType: previous.requestType,
-    decisionNote: next.decisionNote ?? 'verified',
+    decisionNote: decisionAction === 'REJECTED' ? next.decisionNote : (next.decisionNote ?? 'verified'),
   });
 
   if (!authCheck.allowed) {

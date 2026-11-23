@@ -51,11 +51,15 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
 
           {/* Customer */}
+          <Route path="/overview" element={<DashboardPage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/markets" element={<MarketsPage />} />
           <Route path="/markets/:symbol" element={<MarketDetailPage />} />
           <Route path="/trade" element={<TradingPage />} />
-          <Route path="/wallet" element={<WalletPage />} />
+          <Route path="/wallets" element={<WalletPage mode="wallets" />} />
+          <Route path="/wallet" element={<WalletPage mode="wallets" />} />
+          <Route path="/deposit" element={<WalletPage mode="deposit" />} />
+          <Route path="/withdraw" element={<WalletPage mode="withdraw" />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/transactions" element={<TransactionsPage />} />
           <Route path="/kyc" element={<KycPage />} />

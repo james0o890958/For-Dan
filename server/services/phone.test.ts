@@ -59,11 +59,12 @@ test('M-1: parseLoginIdentifier cleanly separates email, public_user_id, and E.1
   assert.deepEqual(parseLoginIdentifier('555-010-2030'), { kind: 'invalid' });
 });
 
-test('M-1 & H-8: auth routes normalize optional phones, handle duplicate-phone 409 conflicts, and block closed accounts', async () => {
+test('M-1 & H-8: auth routes normalize optional phones, handle duplicate-phone 409 conflicts, and block inactive accounts', async () => {
   const authRouteTs = await fs.readFile(path.resolve(process.cwd(), 'server', 'routes', 'auth.ts'), 'utf8');
   assert.match(authRouteTs, /normalizePhoneNumber\(phone\)/);
   assert.match(authRouteTs, /WHERE phone = \$1 AND phone IS NOT NULL/);
   assert.match(authRouteTs, /code:\s*'PHONE_EXISTS'/);
   assert.match(authRouteTs, /uq_profiles_phone_normalized/);
-  assert.match(authRouteTs, /ACCOUNT_CLOSED/);
+  assert.match(authRouteTs, /ACCOUNT_INACTIVE/);
+  assert.match(authRouteTs, /signOutFn\(signIn\.data\.session\.access_token,\s*'global'\)/);
 });

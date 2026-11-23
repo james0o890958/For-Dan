@@ -59,6 +59,7 @@ test('Super Admin can approve and confirm their own treasury funding request', (
       approvedBy: null,
       rejectedBy: null,
       confirmedBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_TREASURY_RECORD,
@@ -67,6 +68,7 @@ test('Super Admin can approve and confirm their own treasury funding request', (
       approvedBy: 'super-admin-1',
       rejectedBy: null,
       confirmedBy: null,
+      decisionNote: null,
     },
     actorUserId: 'super-admin-1',
     actorRole: 'super_admin',
@@ -82,6 +84,7 @@ test('Super Admin can approve and confirm their own treasury funding request', (
       approvedBy: 'super-admin-1',
       rejectedBy: null,
       confirmedBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_TREASURY_RECORD,
@@ -90,6 +93,7 @@ test('Super Admin can approve and confirm their own treasury funding request', (
       approvedBy: 'super-admin-1',
       rejectedBy: null,
       confirmedBy: 'super-admin-1',
+      decisionNote: null,
     },
     actorUserId: 'super-admin-1',
     actorRole: 'super_admin',
@@ -190,6 +194,7 @@ test('Non-treasury approval_requests still strictly forbid self-approval even fo
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_APPROVAL_REQUEST,
@@ -199,6 +204,7 @@ test('Non-treasury approval_requests still strictly forbid self-approval even fo
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     actorUserId: 'super-admin-1',
     actorRole: 'super_admin',
@@ -217,6 +223,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       approvedBy: null,
       rejectedBy: null,
       confirmedBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_TREASURY_RECORD,
@@ -225,6 +232,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       approvedBy: 'finance-admin-1',
       rejectedBy: null,
       confirmedBy: null,
+      decisionNote: null,
     },
     actorUserId: 'finance-admin-1',
     actorRole: 'finance_admin',
@@ -241,6 +249,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       approvedBy: null,
       rejectedBy: null,
       confirmedBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_TREASURY_RECORD,
@@ -248,6 +257,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       approvedBy: 'finance-admin-1',
       rejectedBy: null,
       confirmedBy: 'finance-admin-1',
+      decisionNote: null,
     },
     actorUserId: 'finance-admin-1',
     actorRole: 'finance_admin',
@@ -265,6 +275,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       rejectedBy: 'compliance-admin-1',
       executedBy: null,
       cancelledBy: null,
+      decisionNote: 'Missing invoice',
     },
     next: {
       ...BASE_APPROVAL_REQUEST,
@@ -273,6 +284,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     actorUserId: 'super-admin-1',
     actorRole: 'super_admin',
@@ -290,6 +302,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_APPROVAL_REQUEST,
@@ -299,6 +312,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     actorUserId: 'super-admin-1',
     actorRole: 'super_admin',
@@ -316,6 +330,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_APPROVAL_REQUEST,
@@ -341,6 +356,7 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
       rejectedBy: null,
       executedBy: null,
       cancelledBy: null,
+      decisionNote: null,
     },
     next: {
       ...BASE_APPROVAL_REQUEST,
@@ -358,3 +374,280 @@ test('H-7: blocks immutable field tampering, invalid state transitions, terminal
   assert.equal(validRejection.allowed, true);
   assert.equal(validRejection.code, 'ALLOWED');
 });
+
+test('Phase 1: REJECTED requires decisionNote even when undefined, blocks post-approval decision_note tampering, and enforces actor attribution', () => {
+  const undefinedRejectNote = evaluateTreasuryFundingApproval({
+    requestedByUserId: 'ops-admin-1',
+    actorUserId: 'finance-admin-2',
+    actorRole: 'finance_admin',
+    actorAccountStatus: 'active',
+    targetStatus: 'REJECTED',
+  });
+  assert.equal(undefinedRejectNote.allowed, false);
+  assert.equal(undefinedRejectNote.code, 'DECISION_NOTE_REQUIRED');
+
+  const tamperedDecisionNoteOnConfirm = validateTreasuryFundingTransition({
+    previous: {
+      ...BASE_TREASURY_RECORD,
+      requestedBy: 'ops-admin-1',
+      status: 'APPROVED',
+      approvedBy: 'finance-admin-2',
+      rejectedBy: null,
+      confirmedBy: null,
+      decisionNote: 'Approved against bank wire ref #101',
+    },
+    next: {
+      ...BASE_TREASURY_RECORD,
+      requestedBy: 'ops-admin-1',
+      status: 'CONFIRMED',
+      approvedBy: 'finance-admin-2',
+      rejectedBy: null,
+      confirmedBy: 'super-admin-1',
+      decisionNote: 'Tampered rationale after approval',
+    },
+    actorUserId: 'super-admin-1',
+    actorRole: 'super_admin',
+    actorAccountStatus: 'active',
+  });
+  assert.equal(tamperedDecisionNoteOnConfirm.allowed, false);
+  assert.equal(tamperedDecisionNoteOnConfirm.code, 'IMMUTABLE_FIELD_MODIFIED');
+
+  const spoofedApprover = validateTreasuryFundingTransition({
+    previous: {
+      ...BASE_TREASURY_RECORD,
+      requestedBy: 'ops-admin-1',
+      status: 'PENDING_APPROVAL',
+      approvedBy: null,
+      rejectedBy: null,
+      confirmedBy: null,
+      decisionNote: null,
+    },
+    next: {
+      ...BASE_TREASURY_RECORD,
+      requestedBy: 'ops-admin-1',
+      status: 'APPROVED',
+      approvedBy: 'other-admin-99',
+      rejectedBy: null,
+      confirmedBy: null,
+      decisionNote: null,
+    },
+    actorUserId: 'finance-admin-2',
+    actorRole: 'finance_admin',
+    actorAccountStatus: 'active',
+  });
+  assert.equal(spoofedApprover.allowed, false);
+  assert.equal(spoofedApprover.code, 'ATTRIBUTION_CONFLICT');
+
+  const tamperedDecisionNoteOnExecute = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'APPROVED',
+      approvedBy: 'super-admin-1',
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: 'Verified audit ticket #44',
+    },
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'EXECUTED',
+      approvedBy: 'super-admin-1',
+      rejectedBy: null,
+      executedBy: 'ops-admin-2',
+      cancelledBy: null,
+      decisionNote: 'Altered note on execution',
+    },
+    actorUserId: 'ops-admin-2',
+    actorRole: 'operations_admin',
+    actorAccountStatus: 'active',
+  });
+  assert.equal(tamperedDecisionNoteOnExecute.allowed, false);
+  assert.equal(tamperedDecisionNoteOnExecute.code, 'IMMUTABLE_FIELD_MODIFIED');
+});
+
+test('L-6: omitting previous.decisionNote fails closed with MISSING_PRIOR_STATE on treasury and approval transitions', () => {
+  const omittedTreasuryPrevious = validateTreasuryFundingTransition({
+    previous: {
+      ...BASE_TREASURY_RECORD,
+      requestedBy: 'ops-admin-1',
+      status: 'APPROVED',
+      approvedBy: 'finance-admin-2',
+      rejectedBy: null,
+      confirmedBy: null,
+    } as unknown as Parameters<typeof validateTreasuryFundingTransition>[0]['previous'],
+    next: {
+      ...BASE_TREASURY_RECORD,
+      requestedBy: 'ops-admin-1',
+      status: 'CONFIRMED',
+      approvedBy: 'finance-admin-2',
+      rejectedBy: null,
+      confirmedBy: 'super-admin-1',
+      decisionNote: 'Injected rationale during confirmation',
+    },
+    actorUserId: 'super-admin-1',
+    actorRole: 'super_admin',
+    actorAccountStatus: 'active',
+  });
+  assert.equal(omittedTreasuryPrevious.allowed, false);
+  assert.equal(omittedTreasuryPrevious.code, 'MISSING_PRIOR_STATE');
+
+  const omittedApprovalPrevious = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'APPROVED',
+      approvedBy: 'super-admin-1',
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+    } as unknown as Parameters<typeof validateApprovalRequestTransition>[0]['previous'],
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'EXECUTED',
+      approvedBy: 'super-admin-1',
+      rejectedBy: null,
+      executedBy: 'ops-admin-2',
+      cancelledBy: null,
+      decisionNote: 'Injected rationale during execution',
+    },
+    actorUserId: 'ops-admin-2',
+    actorRole: 'operations_admin',
+    actorAccountStatus: 'active',
+  });
+  assert.equal(omittedApprovalPrevious.allowed, false);
+  assert.equal(omittedApprovalPrevious.code, 'MISSING_PRIOR_STATE');
+
+  const nullToNonNullBlocked = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'APPROVED',
+      approvedBy: 'super-admin-1',
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: null,
+    },
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'EXECUTED',
+      approvedBy: 'super-admin-1',
+      rejectedBy: null,
+      executedBy: 'ops-admin-2',
+      cancelledBy: null,
+      decisionNote: 'Retroactive note',
+    },
+    actorUserId: 'ops-admin-2',
+    actorRole: 'operations_admin',
+    actorAccountStatus: 'active',
+  });
+  assert.equal(nullToNonNullBlocked.allowed, false);
+  assert.equal(nullToNonNullBlocked.code, 'IMMUTABLE_FIELD_MODIFIED');
+});
+
+test('Phase 1.2 CD-3 [UNIT TEST]: closed admin is rejected for APPROVE, EXECUTE, REJECT, and CANCEL transitions in validateApprovalRequestTransition', () => {
+  const closedApprove = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'PENDING_SECOND_APPROVAL',
+      approvedBy: null,
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: null,
+    },
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'APPROVED',
+      approvedBy: 'ops-admin-closed',
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: null,
+    },
+    actorUserId: 'ops-admin-closed',
+    actorRole: 'operations_admin',
+    actorAccountStatus: 'closed',
+  });
+  assert.equal(closedApprove.allowed, false);
+  assert.equal(closedApprove.code, 'ACTOR_SUSPENDED');
+
+  const closedExecute = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'APPROVED',
+      approvedBy: 'finance-admin-active',
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: 'Approved',
+    },
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'EXECUTED',
+      approvedBy: 'finance-admin-active',
+      rejectedBy: null,
+      executedBy: 'super-admin-closed',
+      cancelledBy: null,
+      decisionNote: 'Approved',
+    },
+    actorUserId: 'super-admin-closed',
+    actorRole: 'super_admin',
+    actorAccountStatus: 'closed',
+  });
+  assert.equal(closedExecute.allowed, false);
+  assert.equal(closedExecute.code, 'ACTOR_SUSPENDED');
+
+  const closedReject = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'PENDING_SECOND_APPROVAL',
+      approvedBy: null,
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: null,
+    },
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      status: 'REJECTED',
+      approvedBy: null,
+      rejectedBy: 'compliance-admin-closed',
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: 'Closed admin attempt',
+    },
+    actorUserId: 'compliance-admin-closed',
+    actorRole: 'compliance_admin',
+    actorAccountStatus: 'closed',
+  });
+  assert.equal(closedReject.allowed, false);
+  assert.equal(closedReject.code, 'ACTOR_SUSPENDED');
+
+  const closedCancel = validateApprovalRequestTransition({
+    previous: {
+      ...BASE_APPROVAL_REQUEST,
+      requestedBy: 'finance-admin-closed',
+      status: 'PENDING_SECOND_APPROVAL',
+      approvedBy: null,
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: null,
+      decisionNote: null,
+    },
+    next: {
+      ...BASE_APPROVAL_REQUEST,
+      requestedBy: 'finance-admin-closed',
+      status: 'CANCELLED',
+      approvedBy: null,
+      rejectedBy: null,
+      executedBy: null,
+      cancelledBy: 'finance-admin-closed',
+      decisionNote: null,
+    },
+    actorUserId: 'finance-admin-closed',
+    actorRole: 'finance_admin',
+    actorAccountStatus: 'closed',
+  });
+  assert.equal(closedCancel.allowed, false);
+  assert.equal(closedCancel.code, 'ACTOR_SUSPENDED');
+});
+

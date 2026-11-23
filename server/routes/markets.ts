@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { asyncHandler } from '../middleware/security';
 
 const router = Router();
 
@@ -43,16 +44,28 @@ function setCached<T>(key: string, data: T, ttlMs: number) {
   cache.set(key, { expiresAt: Date.now() + ttlMs, data });
 }
 
-function resolvePairSymbol(rawSymbol: string): { pairSymbol: string; venueSymbol: string } | null {
-  const normalized = decodeURIComponent(rawSymbol).trim().toUpperCase();
+type PairResolutionResult =
+  | { status: 'ok'; pairSymbol: string; venueSymbol: string }
+  | { status: 'malformed' }
+  | { status: 'unknown' };
+
+function resolvePairSymbol(rawSymbol: string): PairResolutionResult {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawSymbol);
+  } catch {
+    return { status: 'malformed' };
+  }
+
+  const normalized = decoded.trim().toUpperCase();
   if (SUPPORTED_PAIRS[normalized]) {
-    return { pairSymbol: normalized, venueSymbol: SUPPORTED_PAIRS[normalized] };
+    return { status: 'ok', pairSymbol: normalized, venueSymbol: SUPPORTED_PAIRS[normalized] };
   }
   const byVenue = Object.entries(SUPPORTED_PAIRS).find(([, venue]) => venue === normalized);
   if (byVenue) {
-    return { pairSymbol: byVenue[0], venueSymbol: byVenue[1] };
+    return { status: 'ok', pairSymbol: byVenue[0], venueSymbol: byVenue[1] };
   }
-  return null;
+  return { status: 'unknown' };
 }
 
 function formatCandleTimeLabel(openTimeMs: number, timeframe: string): string {
@@ -74,132 +87,158 @@ async function fetchJsonWithTimeout<T>(url: string, timeoutMs = 4500): Promise<T
   return (await res.json()) as T;
 }
 
-router.get('/tickers', async (_req, res) => {
-  const cacheKey = 'tickers:all';
-  const cached = getCached<{
-    providerName: string;
-    dataStatus: 'live';
-    syncedAt: string;
-    tickers: unknown[];
-  }>(cacheKey);
-  if (cached) {
-    res.json({ ok: true, data: cached });
-    return;
-  }
+router.get(
+  '/tickers',
+  asyncHandler(async (_req, res) => {
+    const cacheKey = 'tickers:all';
+    const cached = getCached<{
+      providerName: string;
+      dataStatus: 'live';
+      syncedAt: string;
+      tickers: unknown[];
+    }>(cacheKey);
+    if (cached) {
+      res.json({ ok: true, data: { ...cached, isCached: true } });
+      return;
+    }
 
-  try {
-    const venueList = Object.values(SUPPORTED_PAIRS);
-    const symbolsParam = encodeURIComponent(JSON.stringify(venueList));
-    const raw = await fetchJsonWithTimeout<
-      Array<{
-        symbol: string;
-        lastPrice: string;
-        priceChangePercent: string;
-        highPrice: string;
-        lowPrice: string;
-        volume: string;
-      }>
-    >(`${BINANCE_DATA_BASE}/ticker/24hr?symbols=${symbolsParam}`);
+    try {
+      const venueList = Object.values(SUPPORTED_PAIRS);
+      const symbolsParam = encodeURIComponent(JSON.stringify(venueList));
+      const raw = await fetchJsonWithTimeout<
+        Array<{
+          symbol: string;
+          lastPrice: string;
+          priceChangePercent: string;
+          highPrice: string;
+          lowPrice: string;
+          volume: string;
+        }>
+      >(`${BINANCE_DATA_BASE}/ticker/24hr?symbols=${symbolsParam}`);
 
-    const byVenue = new Map(raw.map((item) => [item.symbol, item]));
-    const nowIso = new Date().toISOString();
+      const byVenue = new Map(raw.map((item) => [item.symbol, item]));
+      const nowIso = new Date().toISOString();
 
-    const tickers = Object.entries(SUPPORTED_PAIRS).map(([pairSymbol, venueSymbol]) => {
-      const item = byVenue.get(venueSymbol);
-      return {
-        symbol: pairSymbol,
-        venueSymbol,
-        price: item ? Number(item.lastPrice) : 0,
-        change24hPct: item ? Number(item.priceChangePercent) : 0,
-        high24h: item ? Number(item.highPrice) : 0,
-        low24h: item ? Number(item.lowPrice) : 0,
-        volume24h: item ? Number(item.volume) : 0,
-        dataStatus: item && Number(item.lastPrice) > 0 ? 'live' : 'unavailable',
-        updatedAt: nowIso,
+      const tickers = Object.entries(SUPPORTED_PAIRS).map(([pairSymbol, venueSymbol]) => {
+        const item = byVenue.get(venueSymbol);
+        return {
+          symbol: pairSymbol,
+          venueSymbol,
+          price: item ? Number(item.lastPrice) : 0,
+          change24hPct: item ? Number(item.priceChangePercent) : 0,
+          high24h: item ? Number(item.highPrice) : 0,
+          low24h: item ? Number(item.lowPrice) : 0,
+          volume24h: item ? Number(item.volume) : 0,
+          dataStatus: item && Number(item.lastPrice) > 0 ? 'live' : 'unavailable',
+          updatedAt: nowIso,
+        };
+      });
+
+      const payload = {
+        providerName: 'Spot Market Feed',
+        dataStatus: 'live' as const,
+        syncedAt: nowIso,
+        tickers,
       };
-    });
+      setCached(cacheKey, payload, 4000);
+      res.json({ ok: true, data: { ...payload, isCached: false } });
+    } catch (err) {
+      res.status(503).json({
+        ok: false,
+        code: 'MARKET_DATA_UNAVAILABLE',
+        message: err instanceof Error ? err.message : 'Unable to fetch market tickers.',
+      });
+    }
+  })
+);
 
-    const payload = {
-      providerName: 'Spot Market Feed',
-      dataStatus: 'live' as const,
-      syncedAt: nowIso,
-      tickers,
-    };
-    setCached(cacheKey, payload, 4000);
-    res.json({ ok: true, data: payload });
-  } catch (err) {
-    res.status(503).json({
-      ok: false,
-      code: 'MARKET_DATA_UNAVAILABLE',
-      message: err instanceof Error ? err.message : 'Unable to fetch market tickers.',
-    });
-  }
-});
+router.get(
+  '/:symbol/candles',
+  asyncHandler(async (req, res) => {
+    const resolved = resolvePairSymbol(req.params.symbol);
+    if (resolved.status === 'malformed') {
+      res.status(400).json({
+        ok: false,
+        code: 'INVALID_PAIR_ENCODING',
+        message: 'Malformed trading pair encoding.',
+      });
+      return;
+    }
+    if (resolved.status === 'unknown') {
+      res.status(404).json({ ok: false, code: 'UNKNOWN_PAIR', message: 'Unsupported trading pair.' });
+      return;
+    }
 
-router.get('/:symbol/candles', async (req, res) => {
-  const resolved = resolvePairSymbol(req.params.symbol);
-  if (!resolved) {
-    res.status(404).json({ ok: false, code: 'UNKNOWN_PAIR', message: 'Unsupported trading pair.' });
-    return;
-  }
+    const tfRaw = String(req.query.timeframe || '1H').trim().toUpperCase();
+    const tfConfig = TIMEFRAME_TO_INTERVAL[tfRaw] ?? TIMEFRAME_TO_INTERVAL['1H'];
+    const effectiveTf = TIMEFRAME_TO_INTERVAL[tfRaw] ? tfRaw : '1H';
+    const cacheKey = `candles:${resolved.venueSymbol}:${effectiveTf}`;
 
-  const tfRaw = String(req.query.timeframe || '1H').trim().toUpperCase();
-  const tfConfig = TIMEFRAME_TO_INTERVAL[tfRaw] ?? TIMEFRAME_TO_INTERVAL['1H'];
-  const effectiveTf = TIMEFRAME_TO_INTERVAL[tfRaw] ? tfRaw : '1H';
-  const cacheKey = `candles:${resolved.venueSymbol}:${effectiveTf}`;
+    const cached = getCached<unknown[]>(cacheKey);
+    if (cached) {
+      res.json({
+        ok: true,
+        data: {
+          symbol: resolved.pairSymbol,
+          timeframe: effectiveTf,
+          isCached: true,
+          candles: cached,
+        },
+      });
+      return;
+    }
 
-  const cached = getCached<unknown[]>(cacheKey);
-  if (cached) {
-    res.json({
-      ok: true,
-      data: {
-        symbol: resolved.pairSymbol,
-        timeframe: effectiveTf,
-        candles: cached,
-      },
-    });
-    return;
-  }
+    try {
+      const klines = await fetchJsonWithTimeout<Array<[number, string, string, string, string, string]>>(
+        `${BINANCE_DATA_BASE}/klines?symbol=${resolved.venueSymbol}&interval=${tfConfig.interval}&limit=${tfConfig.limit}`
+      );
 
-  try {
-    const klines = await fetchJsonWithTimeout<Array<[number, string, string, string, string, string]>>(
-      `${BINANCE_DATA_BASE}/klines?symbol=${resolved.venueSymbol}&interval=${tfConfig.interval}&limit=${tfConfig.limit}`
-    );
+      const candles = klines.map((k) => ({
+        timestamp: k[0],
+        timeLabel: formatCandleTimeLabel(k[0], effectiveTf),
+        open: Number(k[1]),
+        high: Number(k[2]),
+        low: Number(k[3]),
+        close: Number(k[4]),
+        volume: Number(k[5]),
+      }));
 
-    const candles = klines.map((k) => ({
-      timestamp: k[0],
-      timeLabel: formatCandleTimeLabel(k[0], effectiveTf),
-      open: Number(k[1]),
-      high: Number(k[2]),
-      low: Number(k[3]),
-      close: Number(k[4]),
-      volume: Number(k[5]),
-    }));
-
-    setCached(cacheKey, candles, 8000);
-    res.json({
-      ok: true,
-      data: {
-        symbol: resolved.pairSymbol,
-        timeframe: effectiveTf,
-        candles,
-      },
-    });
-  } catch (err) {
+      setCached(cacheKey, candles, 8000);
+      res.json({
+        ok: true,
+        data: {
+          symbol: resolved.pairSymbol,
+          timeframe: effectiveTf,
+          isCached: false,
+          candles,
+        },
+      });
+    } catch (err) {
     res.status(503).json({
       ok: false,
       code: 'CANDLES_UNAVAILABLE',
       message: err instanceof Error ? err.message : 'Unable to fetch candlestick data.',
     });
   }
-});
+  })
+);
 
-router.get('/:symbol/orderbook', async (req, res) => {
-  const resolved = resolvePairSymbol(req.params.symbol);
-  if (!resolved) {
-    res.status(404).json({ ok: false, code: 'UNKNOWN_PAIR', message: 'Unsupported trading pair.' });
-    return;
-  }
+router.get(
+  '/:symbol/orderbook',
+  asyncHandler(async (req, res) => {
+    const resolved = resolvePairSymbol(req.params.symbol);
+    if (resolved.status === 'malformed') {
+      res.status(400).json({
+        ok: false,
+        code: 'INVALID_PAIR_ENCODING',
+        message: 'Malformed trading pair encoding.',
+      });
+      return;
+    }
+    if (resolved.status === 'unknown') {
+      res.status(404).json({ ok: false, code: 'UNKNOWN_PAIR', message: 'Unsupported trading pair.' });
+      return;
+    }
 
   const limitParam = Math.min(100, Math.max(5, Number(req.query.limit) || 50));
   const cacheKey = `orderbook:${resolved.venueSymbol}:${limitParam}`;
@@ -235,14 +274,25 @@ router.get('/:symbol/orderbook', async (req, res) => {
       message: err instanceof Error ? err.message : 'Unable to fetch order book depth.',
     });
   }
-});
+  })
+);
 
-router.get('/:symbol/trades', async (req, res) => {
-  const resolved = resolvePairSymbol(req.params.symbol);
-  if (!resolved) {
-    res.status(404).json({ ok: false, code: 'UNKNOWN_PAIR', message: 'Unsupported trading pair.' });
-    return;
-  }
+router.get(
+  '/:symbol/trades',
+  asyncHandler(async (req, res) => {
+    const resolved = resolvePairSymbol(req.params.symbol);
+    if (resolved.status === 'malformed') {
+      res.status(400).json({
+        ok: false,
+        code: 'INVALID_PAIR_ENCODING',
+        message: 'Malformed trading pair encoding.',
+      });
+      return;
+    }
+    if (resolved.status === 'unknown') {
+      res.status(404).json({ ok: false, code: 'UNKNOWN_PAIR', message: 'Unsupported trading pair.' });
+      return;
+    }
 
   const limitParam = Math.min(50, Math.max(5, Number(req.query.limit) || 25));
   const cacheKey = `trades:${resolved.venueSymbol}:${limitParam}`;
@@ -292,6 +342,7 @@ router.get('/:symbol/trades', async (req, res) => {
       message: err instanceof Error ? err.message : 'Unable to fetch recent market trades.',
     });
   }
-});
+  })
+);
 
 export default router;

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { CustomerLayout } from '../../components/layout/CustomerLayout';
 import {
   ChangeBadge,
@@ -21,10 +21,21 @@ import {
   roundAmount,
 } from '../../utils/tradingMath';
 
+interface TradeRouteState {
+  selectedPair?: string;
+  side?: TradeSide;
+}
+
 export const TradingPage: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const initialPair = searchParams.get('pair') || 'BTC/USDT';
-  const initialSide: TradeSide = searchParams.get('side') === 'sell' ? 'sell' : 'buy';
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const routeState = (location.state as TradeRouteState | null) ?? null;
+
+  const queryPair = searchParams.get('pair');
+  const querySide = searchParams.get('side');
+  const initialPair = queryPair || routeState?.selectedPair || 'BTC/USDT';
+  const initialSide: TradeSide =
+    querySide === 'sell' || (!querySide && routeState?.side === 'sell') ? 'sell' : 'buy';
 
   const {
     currentProfile,
@@ -55,6 +66,17 @@ export const TradingPage: React.FC = () => {
   const [confirmOpen, setConfirmOpen] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    const targetPair = searchParams.get('pair') || routeState?.selectedPair;
+    if (targetPair) {
+      setSelectedPairSymbol(targetPair.toUpperCase());
+    }
+    const targetSide = searchParams.get('side') || routeState?.side;
+    if (targetSide === 'buy' || targetSide === 'sell') {
+      setSide(targetSide);
+    }
+  }, [searchParams, routeState]);
 
   useEffect(() => {
     setSelectedReferencePrice(null);
@@ -175,7 +197,16 @@ export const TradingPage: React.FC = () => {
                 id="pair-select"
                 value={activePair.symbol}
                 onChange={(e) => {
-                  setSelectedPairSymbol(e.target.value);
+                  const nextPair = e.target.value;
+                  setSelectedPairSymbol(nextPair);
+                  setSearchParams(
+                    (prev) => {
+                      const next = new URLSearchParams(prev);
+                      next.set('pair', nextPair);
+                      return next;
+                    },
+                    { replace: true }
+                  );
                   setFeedback(null);
                 }}
                 className="px-3.5 py-2 rounded-xl bg-[#E8EAEE] dark:bg-[#242528] text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[#004AE2]"
@@ -256,6 +287,14 @@ export const TradingPage: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setSide('buy');
+                  setSearchParams(
+                    (prev) => {
+                      const next = new URLSearchParams(prev);
+                      next.set('side', 'buy');
+                      return next;
+                    },
+                    { replace: true }
+                  );
                   setAmountInput('');
                   setFeedback(null);
                 }}
@@ -271,6 +310,14 @@ export const TradingPage: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setSide('sell');
+                  setSearchParams(
+                    (prev) => {
+                      const next = new URLSearchParams(prev);
+                      next.set('side', 'sell');
+                      return next;
+                    },
+                    { replace: true }
+                  );
                   setAmountInput('');
                   setFeedback(null);
                 }}

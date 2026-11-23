@@ -66,7 +66,7 @@ export const AdminLayout: React.FC<{
               Sign in
             </Link>
             <Link
-              to="/dashboard"
+              to="/overview"
               className="px-5 py-2.5 rounded-full bg-[#E8EAEE] dark:bg-[#242528] text-sm font-medium"
             >
               Customer Dashboard
@@ -113,7 +113,7 @@ export const AdminLayout: React.FC<{
 
         <div className="p-3 border-t border-[#E2E4E9] dark:border-[#22242A] space-y-2">
           <Link
-            to="/dashboard"
+            to="/overview"
             className="flex items-center justify-center gap-2 w-full py-2.5 rounded-full bg-[#E8EAEE] dark:bg-[#242528] text-xs font-semibold hover:opacity-90"
           >
             <Activity className="w-3.5 h-3.5" aria-hidden="true" />
@@ -172,7 +172,7 @@ export const AdminLayout: React.FC<{
             </nav>
             <div className="p-3 border-t border-[#E2E4E9] dark:border-[#22242A] space-y-2">
               <Link
-                to="/dashboard"
+                to="/overview"
                 onClick={() => setDrawerOpen(false)}
                 className="block text-center w-full py-2.5 rounded-full bg-[#E8EAEE] dark:bg-[#242528] text-xs font-semibold"
               >

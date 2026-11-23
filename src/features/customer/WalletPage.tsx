@@ -26,9 +26,21 @@ import {
   roundAmount,
 } from '../../utils/tradingMath';
 
-export const WalletPage: React.FC = () => {
+export const WalletPage: React.FC<{
+  mode?: 'wallets' | 'deposit' | 'withdraw';
+}> = ({ mode = 'wallets' }) => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialTab = searchParams.get('tab') === 'withdraw' ? 'withdraw' : 'deposit';
+  const initialTab =
+    mode === 'withdraw'
+      ? 'withdraw'
+      : mode === 'deposit'
+        ? 'deposit'
+        : searchParams.get('tab') === 'withdraw'
+          ? 'withdraw'
+          : 'deposit';
+
+  const pageTitle =
+    mode === 'deposit' ? 'Deposit' : mode === 'withdraw' ? 'Withdraw' : 'Wallets';
 
   const {
     currentProfile,
@@ -48,12 +60,20 @@ export const WalletPage: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'deposit' | 'withdraw'>(initialTab);
   useEffect(() => {
-    setActiveTab(searchParams.get('tab') === 'withdraw' ? 'withdraw' : 'deposit');
-  }, [searchParams]);
+    if (mode === 'withdraw') {
+      setActiveTab('withdraw');
+    } else if (mode === 'deposit') {
+      setActiveTab('deposit');
+    } else {
+      setActiveTab(searchParams.get('tab') === 'withdraw' ? 'withdraw' : 'deposit');
+    }
+  }, [mode, searchParams]);
 
   const switchTab = (tab: 'deposit' | 'withdraw') => {
     setActiveTab(tab);
-    setSearchParams(tab === 'withdraw' ? { tab: 'withdraw' } : {});
+    if (mode === 'wallets') {
+      setSearchParams(tab === 'withdraw' ? { tab: 'withdraw' } : {});
+    }
   };
 
   // Deposit state
@@ -145,17 +165,28 @@ export const WalletPage: React.FC = () => {
 
   if (!currentProfile) {
     return (
-      <CustomerLayout title="Wallet">
+      <CustomerLayout
+        title={pageTitle}
+        subtitle="Sandbox environment · Authenticate to inspect custody vaults, network rules, and segregated account balances"
+      >
         <EmptyState
-          title="Sign in to access your wallet"
-          description="View your segregated available and reserved balances, request custody deposit addresses, and submit withdrawals."
+          title={`Sign in to access ${pageTitle}`}
+          description="Live custody deposit addresses and 2FA withdrawal submissions require an authenticated account and approved KYC. No real blockchain operations execute in sandbox preview."
           action={
-            <Link
-              to="/login"
-              className="inline-flex px-5 py-2.5 rounded-full bg-[#004AE2] text-white text-sm font-semibold"
-            >
-              Sign in
-            </Link>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <Link
+                to="/login"
+                className="inline-flex px-5 py-2.5 rounded-lg bg-[#004AE2] text-white text-sm font-semibold hover:bg-[#003ec0]"
+              >
+                Sign in
+              </Link>
+              <Link
+                to="/overview"
+                className="inline-flex px-5 py-2.5 rounded-lg bg-[#E8EAEE] dark:bg-[#242528] text-sm font-medium"
+              >
+                Back to Overview
+              </Link>
+            </div>
           }
         />
       </CustomerLayout>
@@ -202,7 +233,7 @@ export const WalletPage: React.FC = () => {
       : 0;
 
   return (
-    <CustomerLayout title="Wallet">
+    <CustomerLayout title={pageTitle}>
       <div className="space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           {/* Left Column: Asset Valuation, Actions & Segregated Balances */}

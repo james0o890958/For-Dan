@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import type { CandlePoint, MarketTimeframe } from '../../types/domain';
-import { formatCryptoPrice } from '../../utils/tradingMath';
+import { buildIllustrativeCandles } from '../../utils/marketsModel';
+import { formatMarketPriceDisplay } from '../../utils/overviewModel';
 
 type ChartMode = 'candles' | 'line';
 const TIMEFRAMES: MarketTimeframe[] = ['15M', '1H', '4H', '1D', '1W'];
@@ -11,11 +12,23 @@ export const PriceChart: React.FC<{
   candles: CandlePoint[];
   currentPrice: number;
   changePct: number;
-}> = ({ symbol, candles, currentPrice, changePct }) => {
+  allowIllustrativeFallback?: boolean;
+  fallbackReferencePrice?: number;
+  fallbackChangePct?: number;
+}> = ({
+  symbol,
+  candles,
+  currentPrice,
+  changePct,
+  allowIllustrativeFallback = false,
+  fallbackReferencePrice = 0,
+  fallbackChangePct = 0,
+}) => {
   const [mode, setMode] = useState<ChartMode>('candles');
   const [timeframe, setTimeframe] = useState<MarketTimeframe>('1H');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [remoteCandles, setRemoteCandles] = useState<CandlePoint[] | null>(null);
+  const [candlesIsCached, setCandlesIsCached] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -31,12 +44,13 @@ export const PriceChart: React.FC<{
         const body = (await res.json()) as {
           ok?: boolean;
           message?: string;
-          data?: { candles?: CandlePoint[] };
+          data?: { candles?: CandlePoint[]; isCached?: boolean };
         };
         if (!res.ok || !body.ok || !Array.isArray(body.data?.candles)) {
           throw new Error(body.message || 'Unable to load candlestick data.');
         }
         setRemoteCandles(body.data.candles);
+        setCandlesIsCached(Boolean(body.data.isCached));
         setFetchError(null);
       } catch (err) {
         if (signal?.aborted) return;
@@ -53,6 +67,7 @@ export const PriceChart: React.FC<{
 
   useEffect(() => {
     setRemoteCandles(null);
+    setCandlesIsCached(false);
     setHoverIdx(null);
     setFetchError(null);
     const controller = new AbortController();
@@ -68,15 +83,36 @@ export const PriceChart: React.FC<{
     };
   }, [loadCandles]);
 
-  const displayCandles = useMemo(() => {
+  const { displayCandles, usingIllustrativeSeries } = useMemo(() => {
     if (remoteCandles && remoteCandles.length > 0) {
-      return remoteCandles;
+      return { displayCandles: remoteCandles, usingIllustrativeSeries: false };
     }
     if (!fetchError && candles.length > 0) {
-      return candles;
+      return { displayCandles: candles, usingIllustrativeSeries: false };
     }
-    return [];
-  }, [remoteCandles, fetchError, candles]);
+    if (allowIllustrativeFallback && !loading && fallbackReferencePrice > 0) {
+      return {
+        displayCandles: buildIllustrativeCandles({
+          symbol,
+          referencePrice: fallbackReferencePrice,
+          change24hPct: fallbackChangePct,
+          timeframe,
+        }),
+        usingIllustrativeSeries: true,
+      };
+    }
+    return { displayCandles: [] as CandlePoint[], usingIllustrativeSeries: false };
+  }, [
+    remoteCandles,
+    fetchError,
+    candles,
+    allowIllustrativeFallback,
+    loading,
+    fallbackReferencePrice,
+    fallbackChangePct,
+    symbol,
+    timeframe,
+  ]);
 
   const latestClose =
     currentPrice > 0
@@ -238,6 +274,24 @@ export const PriceChart: React.FC<{
         </div>
       </div>
 
+      {usingIllustrativeSeries && (
+        <div
+          data-testid="price-chart-illustrative-notice"
+          className="mb-3 rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#24262E] px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs"
+        >
+          <span className="text-[#4B5059] dark:text-[#9CA0A8]">
+            <strong className="text-[#D97706]">Illustrative Sandbox Curve</strong> · Historical exchange candlesticks are currently unavailable; plotted from reference pricing rather than live order history.
+          </span>
+          <button
+            type="button"
+            onClick={() => void loadCandles()}
+            className="text-[11px] font-semibold text-[#004AE2] dark:text-[#60A5FA] hover:underline whitespace-nowrap shrink-0"
+          >
+            Retry Live Feed
+          </button>
+        </div>
+      )}
+
       {loading && displayCandles.length === 0 ? (
         <div
           data-testid="price-chart-loading"
@@ -262,7 +316,7 @@ export const PriceChart: React.FC<{
           <button
             type="button"
             onClick={() => void loadCandles()}
-            className="mt-4 px-4 py-2 rounded-full bg-[#004AE2] text-white text-xs font-semibold whitespace-nowrap shrink-0"
+            className="mt-4 px-4 py-2 rounded-lg bg-[#004AE2] text-white text-xs font-semibold whitespace-nowrap shrink-0"
           >
             Retry Feed
           </button>
@@ -274,11 +328,16 @@ export const PriceChart: React.FC<{
               <span className="font-semibold text-[#111214] dark:text-[#F4F5F7]">
                 {symbol} · {timeframe}
               </span>
+              {!usingIllustrativeSeries && (
+                <span className="font-sans text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                  {candlesIsCached ? 'Cached Candles' : 'Live Feed'}
+                </span>
+              )}
               <span>{activePoint.timeLabel}</span>
-              <span>O {formatCryptoPrice(activePoint.open)}</span>
-              <span>H {formatCryptoPrice(activePoint.high)}</span>
-              <span>L {formatCryptoPrice(activePoint.low)}</span>
-              <span>C {formatCryptoPrice(activePoint.close)}</span>
+              <span>O {formatMarketPriceDisplay(activePoint.open)}</span>
+              <span>H {formatMarketPriceDisplay(activePoint.high)}</span>
+              <span>L {formatMarketPriceDisplay(activePoint.low)}</span>
+              <span>C {formatMarketPriceDisplay(activePoint.close)}</span>
               <span className={activeChangePct >= 0 ? 'text-[#10C478]' : 'text-[#F0525E]'}>
                 {activeChangePct >= 0 ? '+' : ''}
                 {activeChangePct.toFixed(2)}%
@@ -331,7 +390,7 @@ export const PriceChart: React.FC<{
                         className="fill-[#686D76] dark:fill-[#7E828A] text-[10px]"
                         style={{ fontFamily: 'var(--font-mono)' }}
                       >
-                        {formatCryptoPrice(labelVal)}
+                        {formatMarketPriceDisplay(labelVal)}
                       </text>
                     )}
                   </g>
@@ -492,7 +551,7 @@ export const PriceChart: React.FC<{
                     className="text-[10px] font-semibold"
                     style={{ fontFamily: 'var(--font-mono)' }}
                   >
-                    {formatCryptoPrice(latestClose)}
+                    {formatMarketPriceDisplay(latestClose)}
                   </text>
                 </g>
               )}

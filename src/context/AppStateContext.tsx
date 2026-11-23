@@ -72,6 +72,11 @@ import {
   calculateSpotSellPreview,
   roundAmount,
 } from '../utils/tradingMath';
+import {
+  parseStoredWatchlist,
+  toggleWatchlistSymbol,
+  WATCHLIST_STORAGE_KEY,
+} from '../utils/overviewModel';
 
 export interface ActionResult {
   ok: boolean;
@@ -107,6 +112,13 @@ interface AppStateContextValue {
   tradingPairs: TradingPair[];
   marketPrices: MarketPrice[];
   marketSettings: MarketSettings;
+  marketLoading: boolean;
+  marketFeedIsCached: boolean;
+  marketFeedError: string | null;
+  refreshMarketTickers: () => Promise<void>;
+  watchlist: string[];
+  toggleWatchlist: (symbol: string) => void;
+  isWatchlisted: (symbol: string) => boolean;
   providerHealth: ProviderHealth[];
   reconciliationRuns: ReconciliationRun[];
   walletBalances: WalletBalance[];
@@ -202,6 +214,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [tradingPairs, setTradingPairs] = useState<TradingPair[]>(INITIAL_TRADING_PAIRS);
   const [marketPrices, setMarketPrices] = useState<MarketPrice[]>(INITIAL_MARKET_PRICES);
   const [marketSettings, setMarketSettings] = useState<MarketSettings>(INITIAL_MARKET_SETTINGS);
+  const [marketLoading, setMarketLoading] = useState<boolean>(true);
+  const [marketFeedIsCached, setMarketFeedIsCached] = useState<boolean>(false);
+  const [marketFeedError, setMarketFeedError] = useState<string | null>(null);
+  const [watchlist, setWatchlist] = useState<string[]>(() => {
+    try {
+      return parseStoredWatchlist(localStorage.getItem(WATCHLIST_STORAGE_KEY));
+    } catch {
+      return parseStoredWatchlist(null);
+    }
+  });
   const [providerHealth] = useState<ProviderHealth[]>(INITIAL_PROVIDER_HEALTH);
   const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRun[]>(
     INITIAL_RECONCILIATION_RUNS
@@ -239,6 +261,30 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   const toggleHideBalances = () => setHideBalances((prev) => !prev);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
+    } catch {
+      // ignore storage errors
+    }
+  }, [watchlist]);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === WATCHLIST_STORAGE_KEY) {
+        setWatchlist(parseStoredWatchlist(e.newValue));
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  const toggleWatchlist = (symbol: string) => {
+    setWatchlist((prev) => toggleWatchlistSymbol(prev, symbol));
+  };
+
+  const isWatchlisted = (symbol: string) => watchlist.includes(symbol.trim().toUpperCase());
 
   const setLanguage = (lang: string) => {
     setLanguageState(lang);
@@ -357,18 +403,19 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    const syncTickers = async () => {
-      try {
-        const res = await fetch('/api/markets/tickers');
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!active || !json?.ok || !Array.isArray(json?.data?.tickers)) return;
-
-        const incomingMap = new Map<
-          string,
-          {
+  const syncMarketTickers = async (isActiveCheck?: () => boolean) => {
+    const canUpdate = () => (isActiveCheck ? isActiveCheck() : true);
+    try {
+      const res = await fetch('/api/markets/tickers');
+      const json = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        message?: string;
+        data?: {
+          providerName?: string;
+          dataStatus?: MarketDataStatus;
+          syncedAt?: string;
+          isCached?: boolean;
+          tickers?: Array<{
             symbol: string;
             price: number;
             change24hPct: number;
@@ -377,39 +424,84 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             volume24h: number;
             dataStatus: MarketDataStatus;
             updatedAt: string;
+          }>;
+        };
+      } | null;
+
+      if (!canUpdate()) return;
+
+      if (!res.ok || !json?.ok || !Array.isArray(json?.data?.tickers)) {
+        const errMsg = json?.message || `Market feed unavailable (HTTP ${res.status}).`;
+        setMarketFeedError(errMsg);
+        setMarketPrices((prev) => {
+          const hasAnyCached = prev.some((m) => m.price > 0);
+          setMarketFeedIsCached(hasAnyCached);
+          if (!hasAnyCached) {
+            setMarketSettings((s) => ({ ...s, providerStatus: 'unavailable' }));
           }
-        >(json.data.tickers.map((t: { symbol: string; price: number; change24hPct: number; high24h: number; low24h: number; volume24h: number; dataStatus: MarketDataStatus; updatedAt: string }) => [t.symbol, t]));
-
-        setMarketPrices((prev) =>
-          prev.map((mp) => {
-            const fresh = incomingMap.get(mp.symbol);
-            if (!fresh || fresh.price <= 0) return mp;
-            return {
-              ...mp,
-              price: fresh.price,
-              change24hPct: fresh.change24hPct,
-              high24h: fresh.high24h,
-              low24h: fresh.low24h,
-              volume24h: fresh.volume24h,
-              dataStatus: fresh.dataStatus,
-              updatedAt: fresh.updatedAt,
-            };
-          })
-        );
-
-        setMarketSettings((prev) => ({
-          ...prev,
-          providerName: json.data.providerName || 'Spot Market Feed',
-          providerStatus: json.data.dataStatus === 'live' ? 'live' : prev.providerStatus,
-          lastSyncedAt: json.data.syncedAt || new Date().toISOString(),
-        }));
-      } catch {
-        // Keep existing feed status; never fabricate prices
+          return prev;
+        });
+        return;
       }
-    };
 
-    syncTickers();
-    const timer = window.setInterval(syncTickers, 10_000);
+      const incomingTickers = json.data.tickers;
+      const incomingMap = new Map(incomingTickers.map((t) => [t.symbol, t]));
+      const fromServerCache = Boolean(json.data.isCached);
+
+      setMarketPrices((prev) =>
+        prev.map((mp) => {
+          const fresh = incomingMap.get(mp.symbol);
+          if (!fresh || fresh.price <= 0) return mp;
+          return {
+            ...mp,
+            price: fresh.price,
+            change24hPct: fresh.change24hPct,
+            high24h: fresh.high24h,
+            low24h: fresh.low24h,
+            volume24h: fresh.volume24h,
+            dataStatus: fresh.dataStatus,
+            updatedAt: fresh.updatedAt,
+          };
+        })
+      );
+
+      setMarketFeedIsCached(fromServerCache);
+      setMarketFeedError(null);
+      setMarketSettings((prev) => ({
+        ...prev,
+        providerName: json.data?.providerName || 'Spot Market Feed',
+        providerStatus: json.data?.dataStatus === 'live' ? 'live' : prev.providerStatus,
+        lastSyncedAt: json.data?.syncedAt || new Date().toISOString(),
+      }));
+    } catch {
+      if (!canUpdate()) return;
+      setMarketFeedError('Unable to reach live market ticker endpoint.');
+      setMarketPrices((prev) => {
+        const hasAnyCached = prev.some((m) => m.price > 0);
+        setMarketFeedIsCached(hasAnyCached);
+        if (!hasAnyCached) {
+          setMarketSettings((s) => ({ ...s, providerStatus: 'unavailable' }));
+        }
+        return prev;
+      });
+    } finally {
+      if (canUpdate()) {
+        setMarketLoading(false);
+      }
+    }
+  };
+
+  const refreshMarketTickers = async () => {
+    setMarketLoading(true);
+    await syncMarketTickers();
+  };
+
+  useEffect(() => {
+    let active = true;
+    void syncMarketTickers(() => active);
+    const timer = window.setInterval(() => {
+      void syncMarketTickers(() => active);
+    }, 10_000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -1601,6 +1693,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     tradingPairs,
     marketPrices,
     marketSettings,
+    marketLoading,
+    marketFeedIsCached,
+    marketFeedError,
+    refreshMarketTickers,
+    watchlist,
+    toggleWatchlist,
+    isWatchlisted,
     providerHealth,
     reconciliationRuns,
     walletBalances,

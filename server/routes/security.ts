@@ -7,6 +7,7 @@ import {
   IP_GEOLOCATION_ENDPOINT,
   unavailableSecurityChecks,
 } from '../services/ipGeolocation';
+import { asyncHandler } from '../middleware/security';
 import { listAuthSecurityEvents, type AuthSecurityEventType } from '../services/securityEvents';
 
 const router = Router();
@@ -32,22 +33,25 @@ router.get('/provider-status', (_req, res) => {
   });
 });
 
-router.get('/events', async (req, res) => {
-  const rawLimit = Number(req.query.limit ?? 50);
-  const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
-  const rawType = typeof req.query.eventType === 'string' ? req.query.eventType.trim() : undefined;
-  const eventType =
-    rawType === 'register' || rawType === 'login_success' || rawType === 'login_failure'
-      ? (rawType as AuthSecurityEventType)
-      : undefined;
+router.get(
+  '/events',
+  asyncHandler(async (req, res) => {
+    const rawLimit = Number(req.query.limit ?? 50);
+    const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
+    const rawType = typeof req.query.eventType === 'string' ? req.query.eventType.trim() : undefined;
+    const eventType =
+      rawType === 'register' || rawType === 'login_success' || rawType === 'login_failure'
+        ? (rawType as AuthSecurityEventType)
+        : undefined;
 
-  const data = await listAuthSecurityEvents({ limit, eventType });
-  res.json({
-    ok: true,
-    source: data.source,
-    locationNotice: APPROXIMATE_LOCATION_NOTICE,
-    events: data.events,
-  });
-});
+    const data = await listAuthSecurityEvents({ limit, eventType });
+    res.json({
+      ok: true,
+      source: data.source,
+      locationNotice: APPROXIMATE_LOCATION_NOTICE,
+      events: data.events,
+    });
+  })
+);
 
 export default router;

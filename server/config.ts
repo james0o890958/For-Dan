@@ -28,6 +28,9 @@ export interface ServerConfigStatus {
   normalizedSupabaseUrl: string | null;
   ipGeolocationConfigured: boolean;
   trustedProxyHops: number | false;
+  isProduction: boolean;
+  appUrlConfigured: boolean;
+  appUrlError: string | null;
 }
 
 export function stripSurroundingQuotes(raw?: string): { value: string; hadQuotes: boolean } {
@@ -42,6 +45,13 @@ export function stripSurroundingQuotes(raw?: string): { value: string; hadQuotes
   return { value: trimmed, hadQuotes: false };
 }
 
+/**
+ * Resolves Express `trust proxy` hop count.
+ * Defaults to `1` for standard single reverse-proxy deployments (e.g., Cloud Run / Nginx / ALB)
+ * where the proxy appends/overwrites forwarding headers. Operators deploying the Express server
+ * directly on the public internet without a trusted reverse proxy stripping `X-Forwarded-For`
+ * and `X-Forwarded-Host` MUST explicitly configure `TRUSTED_PROXY_HOPS=0` (or `false`).
+ */
 export function parseTrustedProxyHops(raw?: string): number | false {
   const { value } = stripSurroundingQuotes(raw);
   if (!value) return 1;
@@ -56,6 +66,20 @@ export function parseTrustedProxyHops(raw?: string): number | false {
     }
   }
   return 1;
+}
+
+export function normalizeAppOrigin(rawUrl?: string): string | null {
+  const { value } = stripSurroundingQuotes(rawUrl);
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.origin.toLowerCase();
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeSupabaseProjectUrl(rawUrl?: string): string | null {
@@ -222,7 +246,16 @@ export function getEnvConfig() {
     stripSurroundingQuotes(process.env.SUPABASE_SERVICE_ROLE_KEY).value || null;
   const databaseUrl = stripSurroundingQuotes(process.env.DATABASE_URL).value || null;
   const parsedDb = parseDatabaseUrl(process.env.DATABASE_URL);
-  const appUrl = stripSurroundingQuotes(process.env.APP_URL).value || 'http://localhost:3000';
+  const isProduction = process.env.NODE_ENV?.trim().toLowerCase() === 'production';
+  const rawAppUrl = stripSurroundingQuotes(process.env.APP_URL).value;
+  const normalizedConfiguredAppUrl = normalizeAppOrigin(rawAppUrl);
+  const appUrl = normalizedConfiguredAppUrl ?? (isProduction ? null : 'http://localhost:3000');
+  const appUrlError =
+    isProduction && !normalizedConfiguredAppUrl
+      ? rawAppUrl
+        ? 'APP_URL is invalid; configure a valid http(s) origin when NODE_ENV=production.'
+        : 'APP_URL must be configured to a valid http(s) origin when NODE_ENV=production.'
+      : null;
   const ipGeolocationApiKey =
     stripSurroundingQuotes(process.env.IP_GEOLOCATION_API_KEY).value || null;
   const trustedProxyHops = parseTrustedProxyHops(process.env.TRUSTED_PROXY_HOPS);
@@ -255,6 +288,9 @@ export function getEnvConfig() {
     normalizedSupabaseUrl,
     ipGeolocationConfigured: Boolean(ipGeolocationApiKey),
     trustedProxyHops,
+    isProduction,
+    appUrlConfigured: Boolean(normalizedConfiguredAppUrl),
+    appUrlError,
   };
 
   return {
@@ -264,6 +300,7 @@ export function getEnvConfig() {
     databaseUrl,
     parsedDb,
     appUrl,
+    isProduction,
     ipGeolocationApiKey,
     trustedProxyHops,
     status,

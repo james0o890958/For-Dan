@@ -1,0 +1,65 @@
+name: Phase 1.3 Isolated PostgreSQL Runtime Verification
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'db/migrations/**'
+      - 'server/migrate.ts'
+      - 'server/verifyPostgresRuntime.ts'
+      - 'server/verifyPostgresRuntime.test.ts'
+      - '.github/workflows/phase1-postgres-verification.yml'
+  pull_request:
+    paths:
+      - 'db/migrations/**'
+      - 'server/migrate.ts'
+      - 'server/verifyPostgresRuntime.ts'
+      - 'server/verifyPostgresRuntime.test.ts'
+      - '.github/workflows/phase1-postgres-verification.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-16-runtime-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci_verify
+          POSTGRES_PASSWORD: ci_disposable_password
+          POSTGRES_DB: exchange_verify_disposable
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci_verify -d exchange_verify_disposable"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies using frozen Bun lockfile
+        run: bun install --frozen-lockfile
+
+      - name: Run TypeScript and local static/simulation suite
+        run: |
+          npm run lint
+          npm test
+
+      - name: Run isolated PostgreSQL 16 migrations (001-008) and concurrency verification
+        env:
+          TEST_DATABASE_URL: postgresql://ci_verify:ci_disposable_password@127.0.0.1:55432/exchange_verify_disposable
+        run: npx --no-install tsx server/verifyPostgresRuntime.ts

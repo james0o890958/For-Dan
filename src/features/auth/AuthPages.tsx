@@ -79,7 +79,7 @@ export const LoginPage: React.FC = () => {
       role === 'operations_admin' ||
       role === 'finance_admin' ||
       role === 'compliance_admin';
-    navigate(isAdminAccount ? '/admin' : '/dashboard');
+    navigate(isAdminAccount ? '/admin' : '/overview');
   };
 
   return (
@@ -212,7 +212,7 @@ export const RegisterPage: React.FC = () => {
       setError(res.message);
       return;
     }
-    navigate('/dashboard');
+    navigate('/overview');
   };
 
   return (

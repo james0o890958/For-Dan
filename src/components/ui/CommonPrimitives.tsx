@@ -15,18 +15,26 @@ export const SearchInput: React.FC<{
   placeholder?: string;
   ariaLabel?: string;
   className?: string;
-}> = ({ value, onChange, placeholder = 'Search keywords', ariaLabel = 'Search', className = '' }) => (
+  shape?: 'rounded' | 'pill';
+}> = ({
+  value,
+  onChange,
+  placeholder = 'Search keywords',
+  ariaLabel = 'Search',
+  className = '',
+  shape = 'rounded',
+}) => (
   <div
-    className={`relative flex items-center rounded-full bg-[#E8EAEE] dark:bg-[#242528] border border-transparent focus-within:border-[#004AE2] transition-colors ${className}`}
+    className={`relative flex items-center ${shape === 'pill' ? 'rounded-full' : 'rounded-lg'} bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#24262E] focus-within:border-[#004AE2] transition-colors ${className}`}
   >
-    <Search className="w-4 h-4 text-[#686D76] dark:text-[#7E828A] ml-4 shrink-0" aria-hidden="true" />
+    <Search className="w-4 h-4 text-[#686D76] dark:text-[#7E828A] ml-3.5 shrink-0" aria-hidden="true" />
     <input
       type="search"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       aria-label={ariaLabel}
-      className="w-full bg-transparent px-3 py-2.5 text-sm text-[#111214] dark:text-[#F4F5F7] placeholder:text-[#686D76] dark:placeholder:text-[#6E7178] focus:outline-none min-h-[42px]"
+      className="w-full bg-transparent px-3 py-2 text-xs sm:text-sm text-[#111214] dark:text-[#F4F5F7] placeholder:text-[#686D76] dark:placeholder:text-[#6E7178] focus:outline-none min-h-[38px]"
     />
   </div>
 );

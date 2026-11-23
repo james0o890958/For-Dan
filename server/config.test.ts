@@ -6,6 +6,7 @@ import {
   detectSupabaseKeyFormat,
   getEnvConfig,
   hasDatabasePasswordPlaceholder,
+  normalizeAppOrigin,
   normalizeSupabaseProjectUrl,
   parseDatabaseUrl,
   parseTrustedProxyHops,
@@ -163,6 +164,51 @@ test('Express trust proxy receives numeric 0 and ignores forwarded headers when 
   }
 });
 
+test('L-4: APP_URL defaults to localhost only in non-production and fails closed in production when unset or invalid', () => {
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevAppUrl = process.env.APP_URL;
+
+  try {
+    assert.equal(normalizeAppOrigin('https://Exchange.Example.com/login'), 'https://exchange.example.com');
+    assert.equal(normalizeAppOrigin('javascript:alert(1)'), null);
+    assert.equal(normalizeAppOrigin('MY_APP_URL'), null);
+
+    process.env.NODE_ENV = 'development';
+    delete process.env.APP_URL;
+    const devCfg = getEnvConfig();
+    assert.equal(devCfg.isProduction, false);
+    assert.equal(devCfg.appUrl, 'http://localhost:3000');
+    assert.equal(devCfg.status.appUrlConfigured, false);
+    assert.equal(devCfg.status.appUrlError, null);
+
+    process.env.NODE_ENV = 'production';
+    delete process.env.APP_URL;
+    const prodUnsetCfg = getEnvConfig();
+    assert.equal(prodUnsetCfg.isProduction, true);
+    assert.equal(prodUnsetCfg.appUrl, null);
+    assert.equal(prodUnsetCfg.status.appUrlConfigured, false);
+    assert.match(prodUnsetCfg.status.appUrlError ?? '', /APP_URL must be configured/);
+
+    process.env.APP_URL = 'not-a-valid-origin';
+    const prodInvalidCfg = getEnvConfig();
+    assert.equal(prodInvalidCfg.appUrl, null);
+    assert.equal(prodInvalidCfg.status.appUrlConfigured, false);
+    assert.match(prodInvalidCfg.status.appUrlError ?? '', /APP_URL is invalid/);
+
+    process.env.APP_URL = 'https://app.example.com';
+    const prodValidCfg = getEnvConfig();
+    assert.equal(prodValidCfg.appUrl, 'https://app.example.com');
+    assert.equal(prodValidCfg.status.appUrlConfigured, true);
+    assert.equal(prodValidCfg.status.appUrlError, null);
+  } finally {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+
+    if (prevAppUrl === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = prevAppUrl;
+  }
+});
+
 test('listSqlMigrationFiles discovers all ordered versioned SQL migrations', async () => {
   const files = await listSqlMigrationFiles();
   assert.deepEqual(files, [
@@ -171,5 +217,8 @@ test('listSqlMigrationFiles discovers all ordered versioned SQL migrations', asy
     '003_rls_and_permissions.sql',
     '004_auth_bootstrap_and_catalog.sql',
     '005_security_events_and_ip_intelligence.sql',
+    '006_security_and_rls_hardening.sql',
+    '007_account_closure_concurrency_and_approval_hardening.sql',
+    '008_closed_account_integrity_hardening.sql',
   ]);
 });
