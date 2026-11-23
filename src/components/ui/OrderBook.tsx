@@ -14,6 +14,7 @@ interface RawDepthPayload {
   symbol: string;
   bids: Array<[number, number]>;
   asks: Array<[number, number]>;
+  isCached?: boolean;
   updatedAt: string;
 }
 
@@ -24,6 +25,7 @@ export const OrderBook: React.FC<{
 }> = ({ symbol, currentPrice, onSelectPrice }) => {
   const [viewMode, setViewMode] = useState<BookViewMode>('both');
   const [depth, setDepth] = useState<RawDepthPayload | null>(null);
+  const [isCached, setIsCached] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,6 +64,7 @@ export const OrderBook: React.FC<{
           throw new Error(body.message || 'Unable to load order book depth.');
         }
         setDepth(body.data);
+        setIsCached(Boolean(body.data.isCached));
         setError(null);
       } catch (err) {
         if (signal?.aborted) return;
@@ -77,6 +80,7 @@ export const OrderBook: React.FC<{
 
   useEffect(() => {
     setDepth(null);
+    setIsCached(false);
     setLoading(true);
     setError(null);
     const controller = new AbortController();
@@ -116,13 +120,22 @@ export const OrderBook: React.FC<{
     >
       {/* Header & Controls */}
       <div className="space-y-2 pb-2.5 border-b border-[#E2E4E9] dark:border-[#22242A]">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-[#111214] dark:text-[#F4F5F7]">Order Book</h2>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-[#111214] dark:text-[#F4F5F7]">Order Book</h2>
+            <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">
+              {snapshot
+                ? isCached
+                  ? 'Public Venue Depth · Cached'
+                  : 'Public Venue Depth · Non-custodial'
+                : 'External Liquidity Feed'}
+            </p>
+          </div>
           <button
             type="button"
             onClick={() => void loadOrderBook()}
             aria-label="Refresh order book"
-            className="p-1.5 rounded-md bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white"
+            className="p-1.5 rounded-md bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white shrink-0"
           >
             <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
           </button>

@@ -991,6 +991,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const market = marketPrices.find((m) => m.symbol === pair.symbol);
     if (!market) return { ok: false, message: 'Market price quote unavailable.' };
 
+    const effectiveOrderType: 'MARKET' | 'LIMIT' = input.orderType === 'LIMIT' ? 'LIMIT' : 'MARKET';
+    const effectivePrice =
+      effectiveOrderType === 'LIMIT'
+        ? Number(input.limitPrice ?? 0)
+        : market.price;
+
+    if (effectiveOrderType === 'LIMIT' && (!Number.isFinite(effectivePrice) || effectivePrice <= 0)) {
+      return { ok: false, message: 'Enter a valid positive limit price.' };
+    }
+
     const usdtBal =
       walletBalances.find((b) => b.userId === currentProfile.id && b.assetSymbol === 'USDT')
         ?.available ?? 0;
@@ -1003,7 +1013,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       input.side === 'buy'
         ? calculateSpotBuyPreview({
             usdtAmount: input.amountInput,
-            executionPrice: market.price,
+            executionPrice: effectivePrice,
             feeRate: pair.feeRate,
             availableUsdt: usdtBal,
             minOrderUsdt: pair.minOrderUsdt,
@@ -1015,7 +1025,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           })
         : calculateSpotSellPreview({
             baseQuantity: input.amountInput,
-            executionPrice: market.price,
+            executionPrice: effectivePrice,
             feeRate: pair.feeRate,
             availableBase: baseBal,
             minOrderUsdt: pair.minOrderUsdt,
@@ -1044,7 +1054,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         userId: currentProfile.id,
         pairSymbol: pair.symbol,
         side: input.side,
-        orderType: 'MARKET',
+        orderType: effectiveOrderType,
+        limitPrice: effectiveOrderType === 'LIMIT' ? effectivePrice : null,
         requestedAmount: input.amountInput,
         reservedAsset: input.side === 'buy' ? 'USDT' : pair.baseAsset,
         reservedAmount: 0,

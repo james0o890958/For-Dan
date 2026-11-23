@@ -20,6 +20,8 @@ export interface SpotTradeInput {
   pairSymbol: string;
   side: TradeSide;
   amountInput: number;
+  orderType?: 'MARKET' | 'LIMIT';
+  limitPrice?: number;
 }
 
 export interface WithdrawalRequestInput {

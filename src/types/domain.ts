@@ -280,7 +280,8 @@ export interface SpotOrder {
   userId: string;
   pairSymbol: string;
   side: TradeSide;
-  orderType: 'MARKET';
+  orderType: 'MARKET' | 'LIMIT';
+  limitPrice?: number | null;
   requestedAmount: number;
   reservedAsset: string;
   reservedAmount: number;

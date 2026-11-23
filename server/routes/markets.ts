@@ -242,9 +242,9 @@ router.get(
 
   const limitParam = Math.min(100, Math.max(5, Number(req.query.limit) || 50));
   const cacheKey = `orderbook:${resolved.venueSymbol}:${limitParam}`;
-  const cached = getCached<unknown>(cacheKey);
+  const cached = getCached<Record<string, unknown>>(cacheKey);
   if (cached) {
-    res.json({ ok: true, data: cached });
+    res.json({ ok: true, data: { ...cached, isCached: true } });
     return;
   }
 
@@ -266,7 +266,7 @@ router.get(
       updatedAt: new Date().toISOString(),
     };
     setCached(cacheKey, payload, 2500);
-    res.json({ ok: true, data: payload });
+    res.json({ ok: true, data: { ...payload, isCached: false } });
   } catch (err) {
     res.status(503).json({
       ok: false,
@@ -296,9 +296,9 @@ router.get(
 
   const limitParam = Math.min(50, Math.max(5, Number(req.query.limit) || 25));
   const cacheKey = `trades:${resolved.venueSymbol}:${limitParam}`;
-  const cached = getCached<unknown>(cacheKey);
+  const cached = getCached<Record<string, unknown>>(cacheKey);
   if (cached) {
-    res.json({ ok: true, data: cached });
+    res.json({ ok: true, data: { ...cached, isCached: true } });
     return;
   }
 
@@ -334,7 +334,7 @@ router.get(
       updatedAt: new Date().toISOString(),
     };
     setCached(cacheKey, payload, 2500);
-    res.json({ ok: true, data: payload });
+    res.json({ ok: true, data: { ...payload, isCached: false } });
   } catch (err) {
     res.status(503).json({
       ok: false,

@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import type { PublicMarketTrade, SpotOrder, Trade, TradeSide } from '../../types/domain';
 import { formatCryptoPrice, formatQty, formatUsdt } from '../../utils/tradingMath';
+import { partitionSpotOrders } from '../../utils/tradingWorkspace';
 
-type HistoryTab = 'market_trades' | 'my_trades' | 'spot_orders';
+type HistoryTab = 'market_trades' | 'open_orders' | 'order_history' | 'my_trades';
 
 function formatClockTime(iso: string): string {
   const d = new Date(iso);
@@ -50,6 +51,7 @@ export const TradeHistoryPanel: React.FC<{
   const [sideFilter, setSideFilter] = useState<'all' | 'buy' | 'sell'>('all');
 
   const [marketTrades, setMarketTrades] = useState<PublicMarketTrade[] | null>(null);
+  const [tradesIsCached, setTradesIsCached] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,12 +66,13 @@ export const TradeHistoryPanel: React.FC<{
         const body = (await res.json()) as {
           ok?: boolean;
           message?: string;
-          data?: { trades?: PublicMarketTrade[] };
+          data?: { trades?: PublicMarketTrade[]; isCached?: boolean };
         };
         if (!res.ok || !body.ok || !Array.isArray(body.data?.trades)) {
           throw new Error(body.message || 'Unable to load recent market trades.');
         }
         setMarketTrades(body.data.trades);
+        setTradesIsCached(Boolean(body.data.isCached));
         setError(null);
       } catch (err) {
         if (signal?.aborted) return;
@@ -85,6 +88,7 @@ export const TradeHistoryPanel: React.FC<{
 
   useEffect(() => {
     setMarketTrades(null);
+    setTradesIsCached(false);
     setLoading(true);
     setError(null);
     const controller = new AbortController();
@@ -116,12 +120,27 @@ export const TradeHistoryPanel: React.FC<{
     });
   }, [userOrders, pairFilter, sideFilter, symbol]);
 
+  const { openOrders: allOpenOrders, orderHistory: allOrderHistory } = useMemo(
+    () => partitionSpotOrders(userOrders),
+    [userOrders]
+  );
+
+  const filteredOpenOrders = useMemo(
+    () => partitionSpotOrders(filteredUserOrders).openOrders,
+    [filteredUserOrders]
+  );
+
+  const filteredOrderHistory = useMemo(
+    () => partitionSpotOrders(filteredUserOrders).orderHistory,
+    [filteredUserOrders]
+  );
+
   const baseAsset = symbol.split('/')[0] || 'ASSET';
 
   return (
     <section
       data-testid="trade-history-panel"
-      aria-label="Trade History"
+      aria-label="Orders and Trade History"
       className="rounded-xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-4 space-y-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E2E4E9] dark:border-[#22242A] pb-3">
@@ -143,6 +162,32 @@ export const TradeHistoryPanel: React.FC<{
             <button
               type="button"
               role="tab"
+              aria-selected={activeTab === 'open_orders'}
+              onClick={() => setActiveTab('open_orders')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                activeTab === 'open_orders'
+                  ? 'bg-[#004AE2] text-white'
+                  : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white'
+              }`}
+            >
+              Open Orders ({allOpenOrders.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'order_history'}
+              onClick={() => setActiveTab('order_history')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                activeTab === 'order_history'
+                  ? 'bg-[#004AE2] text-white'
+                  : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white'
+              }`}
+            >
+              Order History ({allOrderHistory.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={activeTab === 'my_trades'}
               onClick={() => setActiveTab('my_trades')}
               className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
@@ -151,26 +196,22 @@ export const TradeHistoryPanel: React.FC<{
                   : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white'
               }`}
             >
-              My Trade History ({userTrades.length})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'spot_orders'}
-              onClick={() => setActiveTab('spot_orders')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
-                activeTab === 'spot_orders'
-                  ? 'bg-[#004AE2] text-white'
-                  : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white'
-              }`}
-            >
-              Spot Orders ({userOrders.length})
+              Trade History ({userTrades.length})
             </button>
           </div>
         ) : (
-          <h2 className="text-sm font-semibold text-[#111214] dark:text-[#F4F5F7]">
-            Recent Market Trades · {symbol}
-          </h2>
+          <div>
+            <h2 className="text-sm font-semibold text-[#111214] dark:text-[#F4F5F7]">
+              Recent Market Trades · {symbol}
+            </h2>
+            <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">
+              {marketTrades && marketTrades.length > 0
+                ? tradesIsCached
+                  ? 'Public Venue Reference Tape · Cached'
+                  : 'Public Venue Reference Tape · Non-custodial'
+                : 'External Market Feed'}
+            </p>
+          </div>
         )}
 
         <div className="flex flex-wrap items-center gap-2">
@@ -221,14 +262,21 @@ export const TradeHistoryPanel: React.FC<{
           )}
 
           {(!showAccountTabs || activeTab === 'market_trades') && (
-            <button
-              type="button"
-              onClick={() => void loadMarketTrades()}
-              aria-label="Refresh market trades"
-              className="p-1.5 rounded-md bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
+            <div className="flex items-center gap-2">
+              {showAccountTabs && marketTrades && marketTrades.length > 0 && (
+                <span className="text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                  {tradesIsCached ? 'Public Venue Tape · Cached' : 'Public Venue Reference Tape'}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void loadMarketTrades()}
+                aria-label="Refresh market trades"
+                className="p-1.5 rounded-md bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -311,7 +359,167 @@ export const TradeHistoryPanel: React.FC<{
         </div>
       )}
 
-      {/* Tab 2: Account Settled Trade History */}
+      {/* Market Trades & Account Order/Trade Tabs */}
+
+      {/* Tab 2: Open Orders */}
+      {showAccountTabs && activeTab === 'open_orders' && (
+        <div data-testid="open-orders-list">
+          {!isAuthenticated ? (
+            <div className="py-8 text-center space-y-2">
+              <p className="text-xs font-medium text-[#686D76] dark:text-[#7E828A]">
+                Sign in to view open spot orders. No simulated or fabricated orders are created in guest mode.
+              </p>
+              <Link
+                to="/login"
+                className="inline-flex px-4 py-2 rounded-lg bg-[#004AE2] text-white text-xs font-semibold"
+              >
+                Sign in
+              </Link>
+            </div>
+          ) : filteredOpenOrders.length === 0 ? (
+            <div className="py-8 px-4 text-center rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#22242A]">
+              <p className="text-xs font-semibold text-[#111214] dark:text-[#F4F5F7]">
+                No Open Spot Orders
+              </p>
+              <p className="mt-1 text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                Resting limit orders only persist once live OMS and liquidity routing are enabled in Phase D.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[#686D76] dark:text-[#7E828A] border-b border-[#E2E4E9] dark:border-[#22242A]">
+                    <th className="py-2 pr-3 font-medium">Time</th>
+                    <th className="py-2 pr-3 font-medium">Pair</th>
+                    <th className="py-2 pr-3 font-medium">Side</th>
+                    <th className="py-2 pr-3 font-medium">Type</th>
+                    <th className="py-2 pr-3 font-medium text-right">Price</th>
+                    <th className="py-2 pr-3 font-medium text-right">Amount</th>
+                    <th className="py-2 pr-3 font-medium text-right">Filled</th>
+                    <th className="py-2 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23] font-mono-num">
+                  {filteredOpenOrders.map((o) => (
+                    <tr key={o.id}>
+                      <td className="py-2.5 pr-3 text-[#686D76] dark:text-[#7E828A] whitespace-nowrap">
+                        {formatDateTime(o.createdAt)}
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans font-semibold">{o.pairSymbol}</td>
+                      <td
+                        className={`py-2.5 pr-3 font-sans font-semibold uppercase ${
+                          o.side === 'buy' ? 'text-[#10C478]' : 'text-[#F0525E]'
+                        }`}
+                      >
+                        {o.side}
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans text-[#686D76] dark:text-[#9CA0A8]">
+                        {o.orderType}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">
+                        {o.limitPrice ? formatCryptoPrice(o.limitPrice) : 'Market'}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">
+                        {formatQty(o.requestedAmount)} {o.reservedAsset}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">{formatQty(o.filledBaseQty)}</td>
+                      <td className="py-2.5 font-sans font-semibold text-[#004AE2] dark:text-[#60A5FA]">
+                        {o.status}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 3: Order History */}
+      {showAccountTabs && activeTab === 'order_history' && (
+        <div data-testid="order-history-list">
+          {!isAuthenticated ? (
+            <div className="py-8 text-center space-y-2">
+              <p className="text-xs font-medium text-[#686D76] dark:text-[#7E828A]">
+                Sign in to inspect submitted, filled, and rejected spot order records.
+              </p>
+              <Link
+                to="/login"
+                className="inline-flex px-4 py-2 rounded-lg bg-[#004AE2] text-white text-xs font-semibold"
+              >
+                Sign in
+              </Link>
+            </div>
+          ) : filteredOrderHistory.length === 0 ? (
+            <div className="py-8 px-4 text-center rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#22242A]">
+              <p className="text-xs font-semibold text-[#111214] dark:text-[#F4F5F7]">
+                No Spot Order History
+              </p>
+              <p className="mt-1 text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                Submitted or rejected order attempts for this account appear here automatically.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[#686D76] dark:text-[#7E828A] border-b border-[#E2E4E9] dark:border-[#22242A]">
+                    <th className="py-2 pr-3 font-medium">Time</th>
+                    <th className="py-2 pr-3 font-medium">Pair</th>
+                    <th className="py-2 pr-3 font-medium">Side</th>
+                    <th className="py-2 pr-3 font-medium">Type</th>
+                    <th className="py-2 pr-3 font-medium text-right">Price</th>
+                    <th className="py-2 pr-3 font-medium text-right">Requested</th>
+                    <th className="py-2 pr-3 font-medium text-right">Filled Base</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 font-medium">Venue Note</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23] font-mono-num">
+                  {filteredOrderHistory.map((o) => (
+                    <tr key={o.id}>
+                      <td className="py-2.5 pr-3 text-[#686D76] dark:text-[#7E828A] whitespace-nowrap">
+                        {formatDateTime(o.createdAt)}
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans font-semibold">{o.pairSymbol}</td>
+                      <td
+                        className={`py-2.5 pr-3 font-sans font-semibold uppercase ${
+                          o.side === 'buy' ? 'text-[#10C478]' : 'text-[#F0525E]'
+                        }`}
+                      >
+                        {o.side}
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans text-[#686D76] dark:text-[#9CA0A8]">
+                        {o.orderType}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">
+                        {o.limitPrice ? formatCryptoPrice(o.limitPrice) : 'Market'}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">
+                        {formatQty(o.requestedAmount)} {o.reservedAsset}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">{formatQty(o.filledBaseQty)}</td>
+                      <td
+                        className={`py-2.5 pr-3 font-sans font-semibold ${
+                          o.status === 'FILLED' ? 'text-[#10C478]' : 'text-[#F0525E]'
+                        }`}
+                      >
+                        {o.status}
+                      </td>
+                      <td className="py-2.5 font-sans text-[#686D76] dark:text-[#7E828A]">
+                        {o.rejectReason || o.venueOrderId || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 4: Account Settled Trade History */}
       {showAccountTabs && activeTab === 'my_trades' && (
         <div data-testid="my-trade-history-list">
           {!isAuthenticated ? (
@@ -321,15 +529,20 @@ export const TradeHistoryPanel: React.FC<{
               </p>
               <Link
                 to="/login"
-                className="inline-flex px-4 py-2 rounded-full bg-[#004AE2] text-white text-xs font-semibold"
+                className="inline-flex px-4 py-2 rounded-lg bg-[#004AE2] text-white text-xs font-semibold"
               >
                 Sign in
               </Link>
             </div>
           ) : filteredUserTrades.length === 0 ? (
-            <p className="py-6 text-xs text-[#686D76] dark:text-[#7E828A]">
-              No settled spot trades match the selected filter.
-            </p>
+            <div className="py-8 px-4 text-center rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#22242A]">
+              <p className="text-xs font-semibold text-[#111214] dark:text-[#F4F5F7]">
+                No Settled Account Trades
+              </p>
+              <p className="mt-1 text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                Executed spot fills credited or debited on your ledger will appear here.
+              </p>
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -365,68 +578,6 @@ export const TradeHistoryPanel: React.FC<{
                       <td className="py-2.5 pr-3 text-right font-semibold">{formatUsdt(t.totalUsdt)}</td>
                       <td className="py-2.5 text-right text-[#686D76] dark:text-[#7E828A]">
                         {t.venueTradeId}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Tab 3: Customer Spot Orders */}
-      {showAccountTabs && activeTab === 'spot_orders' && (
-        <div data-testid="my-spot-orders-list">
-          {!isAuthenticated ? (
-            <div className="py-8 text-center space-y-2">
-              <p className="text-xs font-medium text-[#686D76] dark:text-[#7E828A]">
-                Sign in to view your submitted spot orders and venue statuses.
-              </p>
-              <Link
-                to="/login"
-                className="inline-flex px-4 py-2 rounded-full bg-[#004AE2] text-white text-xs font-semibold"
-              >
-                Sign in
-              </Link>
-            </div>
-          ) : filteredUserOrders.length === 0 ? (
-            <p className="py-6 text-xs text-[#686D76] dark:text-[#7E828A]">
-              No spot orders match the selected filter.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-[#686D76] dark:text-[#7E828A] border-b border-[#E2E4E9] dark:border-[#22242A]">
-                    <th className="py-2 pr-3 font-medium">Time</th>
-                    <th className="py-2 pr-3 font-medium">Pair</th>
-                    <th className="py-2 pr-3 font-medium">Side</th>
-                    <th className="py-2 pr-3 font-medium text-right">Requested</th>
-                    <th className="py-2 pr-3 font-medium text-right">Filled Base</th>
-                    <th className="py-2 pr-3 font-medium">Status</th>
-                    <th className="py-2 font-medium">Venue Note</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23] font-mono-num">
-                  {filteredUserOrders.map((o) => (
-                    <tr key={o.id}>
-                      <td className="py-2.5 pr-3 text-[#686D76] dark:text-[#7E828A] whitespace-nowrap">
-                        {formatDateTime(o.createdAt)}
-                      </td>
-                      <td className="py-2.5 pr-3 font-sans font-semibold">{o.pairSymbol}</td>
-                      <td
-                        className={`py-2.5 pr-3 font-sans font-semibold uppercase ${
-                          o.side === 'buy' ? 'text-[#10C478]' : 'text-[#F0525E]'
-                        }`}
-                      >
-                        {o.side}
-                      </td>
-                      <td className="py-2.5 pr-3 text-right">{formatQty(o.requestedAmount)}</td>
-                      <td className="py-2.5 pr-3 text-right">{formatQty(o.filledBaseQty)}</td>
-                      <td className="py-2.5 pr-3 font-sans font-semibold">{o.status}</td>
-                      <td className="py-2.5 font-sans text-[#686D76] dark:text-[#7E828A]">
-                        {o.rejectReason || o.venueOrderId || '—'}
                       </td>
                     </tr>
                   ))}
