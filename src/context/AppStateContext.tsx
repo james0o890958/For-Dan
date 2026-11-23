@@ -156,6 +156,7 @@ interface AppStateContextValue {
     documentNumber: string;
   }) => ActionResult;
   requestDepositAddress: (payload: { assetSymbol: string; networkCode: string }) => Promise<ActionResult>;
+  submitDeposit: (payload: { assetSymbol: string; networkCode: string; amount: number; txHash: string }) => ActionResult;
   requestWithdrawal: (input: WithdrawalRequestInput) => ActionResult;
   cancelWithdrawal: (withdrawalId: string) => ActionResult;
   submitSpotOrder: (input: SpotTradeInput) => Promise<ActionResult>;
@@ -166,6 +167,7 @@ interface AppStateContextValue {
   toggleCustomerAccountStatus: (customerUserId: string, nextStatus: AccountStatus, reason: string) => ActionResult;
   reviewKyc: (submissionId: string, decision: 'approved' | 'rejected', rejectionReason?: string) => ActionResult;
   reviewDeposit: (depositId: string, decision: 'approved' | 'rejected', adminNote: string) => ActionResult;
+  assignDepositAddress: (payload: { userId: string; assetSymbol: string; networkCode: string; address: string; memoOrTag?: string }) => ActionResult;
   reviewWithdrawal: (withdrawalId: string, decision: 'approved' | 'rejected', note: string) => ActionResult;
   dispatchApprovedWithdrawal: (withdrawalId: string) => Promise<ActionResult>;
   finalizeWithdrawalRecord: (withdrawalId: string) => ActionResult;
@@ -229,7 +231,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     INITIAL_RECONCILIATION_RUNS
   );
   const [walletBalances, setWalletBalances] = useState<WalletBalance[]>(INITIAL_WALLET_BALANCES);
-  const [depositAddresses] = useState<DepositAddress[]>(INITIAL_DEPOSIT_ADDRESSES);
+  const [depositAddresses, setDepositAddresses] = useState<DepositAddress[]>(INITIAL_DEPOSIT_ADDRESSES);
   const [deposits, setDeposits] = useState<DepositRecord[]>(INITIAL_DEPOSITS);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>(INITIAL_WITHDRAWALS);
   const [kycSubmissions, setKycSubmissions] = useState<KycSubmission[]>(INITIAL_KYC_SUBMISSIONS);
@@ -836,6 +838,108 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       networkCode: payload.networkCode,
     });
     return { ok: res.ok, message: res.message };
+  };
+
+  const submitDeposit = (payload: {
+    assetSymbol: string;
+    networkCode: string;
+    amount: number;
+    txHash: string;
+  }): ActionResult => {
+    if (!currentProfile) return { ok: false, message: 'Please sign in first.' };
+    if (currentProfile.kycStatus !== 'approved') {
+      return { ok: false, message: 'Approved KYC verification is required before submitting deposits.' };
+    }
+    const assigned = depositAddresses.find(
+      (d) => d.userId === currentProfile.id && d.assetSymbol === payload.assetSymbol && d.networkCode === payload.networkCode
+    );
+    if (!assigned) {
+      return { ok: false, message: 'No deposit address assigned for this asset and network. Please request an address first.' };
+    }
+    const amt = Number(payload.amount);
+    if (isNaN(amt) || amt <= 0) {
+      return { ok: false, message: 'Please enter a valid deposit amount greater than zero.' };
+    }
+    const tx = payload.txHash.trim();
+    if (!tx) {
+      return { ok: false, message: 'Transaction hash / reference is required.' };
+    }
+    const duplicateTx = deposits.some(
+      (d) => d.txHash.toLowerCase() === tx.toLowerCase() && d.assetSymbol === payload.assetSymbol
+    );
+    if (duplicateTx) {
+      return { ok: false, message: 'Duplicate transaction hash detected. This transaction has already been recorded.' };
+    }
+
+    const net = networks.find((n) => n.assetSymbol === payload.assetSymbol && n.code === payload.networkCode);
+    const minDep = net?.minDeposit ?? 10;
+    if (amt < minDep) {
+      return { ok: false, message: `Amount is below the minimum deposit requirement of ${minDep} ${payload.assetSymbol}.` };
+    }
+
+    const now = new Date().toISOString();
+    const newDep: DepositRecord = {
+      id: `dep-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      userId: currentProfile.id,
+      assetSymbol: payload.assetSymbol.toUpperCase(),
+      networkCode: payload.networkCode,
+      depositAddress: assigned.address,
+      memoOrTag: assigned.memoOrTag,
+      txHash: tx,
+      fromAddress: null,
+      amount: amt,
+      confirmations: 1,
+      requiredConfirmations: net?.requiredConfirmations ?? 12,
+      addressVerified: true,
+      networkVerified: true,
+      amountVerified: true,
+      duplicateChecked: true,
+      kytStatus: 'passed',
+      kytRiskScore: 10,
+      status: 'PENDING_ADMIN_REVIEW',
+      adminNote: null,
+      reviewedBy: null,
+      reviewedAt: null,
+      creditedTxId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setDeposits((prev) => [newDep, ...prev]);
+    return { ok: true, message: 'Deposit submitted successfully and queued for admin verification.' };
+  };
+
+  const assignDepositAddress = (payload: {
+    userId: string;
+    assetSymbol: string;
+    networkCode: string;
+    address: string;
+    memoOrTag?: string;
+  }): ActionResult => {
+    if (!currentProfile || !isAdmin) {
+      return { ok: false, message: 'Unauthorized. Admin role required to assign deposit addresses.' };
+    }
+    const trimmed = payload.address.trim();
+    if (!trimmed) {
+      return { ok: false, message: 'Deposit address cannot be empty.' };
+    }
+    const newAddr: DepositAddress = {
+      id: `addr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      userId: payload.userId,
+      assetSymbol: payload.assetSymbol.toUpperCase(),
+      networkCode: payload.networkCode,
+      custodyVaultId: 'vault-manual-admin',
+      address: trimmed,
+      memoOrTag: payload.memoOrTag?.trim() || null,
+      createdAt: new Date().toISOString(),
+    };
+    setDepositAddresses((prev) => [
+      newAddr,
+      ...prev.filter(
+        (d) => !(d.userId === payload.userId && d.assetSymbol === newAddr.assetSymbol && d.networkCode === newAddr.networkCode)
+      ),
+    ]);
+    return { ok: true, message: `Successfully assigned ${newAddr.assetSymbol} (${newAddr.networkCode}) address to customer.` };
   };
 
   const requestWithdrawal = (input: WithdrawalRequestInput): ActionResult => {
@@ -1739,6 +1843,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     toggleTwoFactor,
     submitKyc,
     requestDepositAddress,
+    submitDeposit,
     requestWithdrawal,
     cancelWithdrawal,
     submitSpotOrder,
@@ -1747,6 +1852,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     toggleCustomerAccountStatus,
     reviewKyc,
     reviewDeposit,
+    assignDepositAddress,
     reviewWithdrawal,
     dispatchApprovedWithdrawal,
     finalizeWithdrawalRecord,

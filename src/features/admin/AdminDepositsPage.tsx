@@ -11,13 +11,22 @@ export const AdminDepositsPage: React.FC = () => {
     networks,
     ledgerTransactions,
     profiles,
+    depositAddresses,
     reviewDeposit,
     updateNetworkConfig,
+    assignDepositAddress,
   } = useAppState();
 
-  const [tab, setTab] = useState<'queue' | 'networks'>('queue');
+  const [tab, setTab] = useState<'queue' | 'networks' | 'addresses'>('queue');
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const [addrCustomerUserId, setAddrCustomerUserId] = useState(profiles[0]?.id ?? '');
+  const [addrAsset, setAddrAsset] = useState('USDT');
+  const addrNetworks = useMemo(() => networks.filter((n) => n.assetSymbol === addrAsset), [networks, addrAsset]);
+  const [addrNetworkCode, setAddrNetworkCode] = useState(addrNetworks[0]?.code ?? 'TRC-20');
+  const [addrValue, setAddrValue] = useState('');
+  const [addrMemo, setAddrMemo] = useState('');
 
   const [editingNetId, setEditingNetId] = useState<string | null>(null);
   const [netForm, setNetForm] = useState({
@@ -65,6 +74,22 @@ export const AdminDepositsPage: React.FC = () => {
     if (res.ok) setEditingNetId(null);
   };
 
+  const handleAssignAddress = (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = assignDepositAddress({
+      userId: addrCustomerUserId,
+      assetSymbol: addrAsset,
+      networkCode: addrNetworkCode,
+      address: addrValue,
+      memoOrTag: addrMemo,
+    });
+    setFeedback({ ok: res.ok, text: res.message });
+    if (res.ok) {
+      setAddrValue('');
+      setAddrMemo('');
+    }
+  };
+
   return (
     <AdminLayout title="Deposit Verification & Network Rules">
       <div className="space-y-5">
@@ -91,6 +116,17 @@ export const AdminDepositsPage: React.FC = () => {
               }`}
             >
               Network Rules & Confirmations
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('addresses')}
+              className={`px-4 py-2 rounded-full text-xs font-semibold ${
+                tab === 'addresses'
+                  ? 'bg-[#004AE2] text-white'
+                  : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8]'
+              }`}
+            >
+              Deposit Address Management ({depositAddresses.length})
             </button>
           </div>
 
@@ -463,6 +499,159 @@ export const AdminDepositsPage: React.FC = () => {
                 </div>
               </form>
             )}
+          </div>
+        )}
+
+        {tab === 'addresses' && (
+          <div className="space-y-6">
+            <form
+              onSubmit={handleAssignAddress}
+              className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-6 space-y-4 max-w-2xl"
+            >
+              <h2 className="text-base font-semibold">Assign Genuine Deposit Address to Customer</h2>
+              <p className="text-xs text-[#686D76] dark:text-[#7E828A]">
+                Administrators can assign genuine deposit addresses supplied by the custody provider to customer accounts.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="admin-cust" className="block text-xs font-medium mb-1">
+                    Customer
+                  </label>
+                  <select
+                    id="admin-cust"
+                    value={addrCustomerUserId}
+                    onChange={(e) => setAddrCustomerUserId(e.target.value)}
+                    className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs"
+                  >
+                    {profiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.fullName} ({p.email}) — ID {p.publicUserId}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label htmlFor="admin-ast" className="block text-xs font-medium mb-1">
+                      Asset
+                    </label>
+                    <select
+                      id="admin-ast"
+                      value={addrAsset}
+                      onChange={(e) => setAddrAsset(e.target.value)}
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs"
+                    >
+                      {['USDT', 'BTC', 'ETH', 'SOL'].map((sym) => (
+                        <option key={sym} value={sym}>
+                          {sym}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="admin-net" className="block text-xs font-medium mb-1">
+                      Network
+                    </label>
+                    <select
+                      id="admin-net"
+                      value={addrNetworkCode}
+                      onChange={(e) => setAddrNetworkCode(e.target.value)}
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs"
+                    >
+                      {addrNetworks.map((n) => (
+                        <option key={n.id} value={n.code}>
+                          {n.code}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="admin-addr" className="block text-xs font-medium mb-1">
+                  Deposit Address
+                </label>
+                <input
+                  id="admin-addr"
+                  type="text"
+                  value={addrValue}
+                  onChange={(e) => setAddrValue(e.target.value)}
+                  placeholder="e.g. 0x71C... or TXYZ..."
+                  required
+                  className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] font-mono-num text-xs"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="admin-memo" className="block text-xs font-medium mb-1">
+                  Destination Tag / Memo (Optional)
+                </label>
+                <input
+                  id="admin-memo"
+                  type="text"
+                  value={addrMemo}
+                  onChange={(e) => setAddrMemo(e.target.value)}
+                  placeholder="Memo or Tag if required"
+                  className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] font-mono-num text-xs"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="px-6 h-11 rounded-full bg-[#004AE2] text-white text-xs font-semibold hover:bg-[#003ec0]"
+              >
+                Assign Deposit Address
+              </button>
+            </form>
+
+            <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] overflow-hidden">
+              <div className="px-5 py-4 border-b border-[#E2E4E9] dark:border-[#22242A]">
+                <h3 className="text-sm font-semibold">Assigned Deposit Addresses ({depositAddresses.length})</h3>
+              </div>
+              {depositAddresses.length === 0 ? (
+                <p className="p-5 text-xs text-[#686D76]">No deposit addresses assigned yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-[#E8EAEE] dark:bg-[#262629] text-left text-[#686D76]">
+                        <th className="py-3 px-4 font-medium">Customer</th>
+                        <th className="py-3 px-4 font-medium">Asset / Network</th>
+                        <th className="py-3 px-4 font-medium">Address</th>
+                        <th className="py-3 px-4 font-medium">Memo</th>
+                        <th className="py-3 px-4 font-medium">Created At</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23]">
+                      {depositAddresses.map((da) => {
+                        const cust = profileMap.get(da.userId);
+                        return (
+                          <tr key={da.id}>
+                            <td className="py-3 px-4">
+                              <p className="font-semibold">{cust?.fullName ?? 'Customer'}</p>
+                              <p className="text-[11px] text-[#686D76]">{cust?.email}</p>
+                            </td>
+                            <td className="py-3 px-4 font-semibold">
+                              {da.assetSymbol} ({da.networkCode})
+                            </td>
+                            <td className="py-3 px-4 font-mono-num truncate max-w-[200px]">
+                              {da.address}
+                            </td>
+                            <td className="py-3 px-4 font-mono-num">{da.memoOrTag || '—'}</td>
+                            <td className="py-3 px-4 text-[#686D76]">
+                              {new Date(da.createdAt).toLocaleString()}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

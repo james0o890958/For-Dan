@@ -11,6 +11,7 @@ import { MarketsPage } from './features/customer/MarketsPage';
 import { MarketDetailPage } from './features/customer/MarketDetailPage';
 import { TradingPage } from './features/customer/TradingPage';
 import { WalletPage } from './features/customer/WalletPage';
+import { AssetWalletDetailPage } from './features/customer/AssetWalletDetailPage';
 import { PortfolioPage } from './features/customer/PortfolioPage';
 import { TransactionsPage } from './features/customer/TransactionsPage';
 import { KycPage } from './features/customer/KycPage';
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="/markets/:symbol" element={<MarketDetailPage />} />
           <Route path="/trade" element={<TradingPage />} />
           <Route path="/wallets" element={<WalletPage mode="wallets" />} />
+          <Route path="/wallets/:symbol" element={<AssetWalletDetailPage />} />
           <Route path="/wallet" element={<WalletPage mode="wallets" />} />
           <Route path="/deposit" element={<WalletPage mode="deposit" />} />
           <Route path="/withdraw" element={<WalletPage mode="withdraw" />} />
