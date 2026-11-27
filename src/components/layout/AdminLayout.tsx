@@ -16,6 +16,7 @@ import {
   Radio,
   ReceiptText,
   Scale,
+  ShieldCheck,
   Sliders,
   Sun,
   UserCog,
@@ -40,6 +41,7 @@ const ADMIN_NAV = [
   { to: '/admin/notifications', label: 'Notifications', icon: Bell },
   { to: '/admin/admins', label: 'Admin Roles', icon: UserCog },
   { to: '/admin/audit-logs', label: 'Audit Logs', icon: History },
+  { to: '/admin/security', label: 'Security & Login Activity', icon: ShieldCheck },
 ];
 
 export const AdminLayout: React.FC<{

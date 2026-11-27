@@ -35,6 +35,7 @@ import {
   AdminTransactionsPage,
 } from './features/admin/AdminLedgerPages';
 import { AdminNotificationsPage } from './features/admin/AdminNotificationsPage';
+import { AdminSecurityPage } from './features/admin/AdminSecurityPage';
 import {
   AdminAuditLogsPage,
   AdminRolesPage,
@@ -83,6 +84,7 @@ export default function App() {
           <Route path="/admin/notifications" element={<AdminNotificationsPage />} />
           <Route path="/admin/admins" element={<AdminRolesPage />} />
           <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
+          <Route path="/admin/security" element={<AdminSecurityPage />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

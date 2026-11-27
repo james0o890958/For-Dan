@@ -17,6 +17,61 @@ import type {
   WalletBalance,
 } from '../types/domain';
 
+export interface AuthSecurityEventRecord {
+  id: string;
+  eventType: 'register' | 'login_success' | 'login_failure';
+  userId: string | null;
+  identifierAttempted: string | null;
+  ipAddress: string | null;
+  ipVersion: 4 | 6 | null;
+  ipSource: string;
+  isGeolocationApproximate: boolean;
+  locationNotice: string;
+  countryCode: string | null;
+  countryName: string | null;
+  regionState: string | null;
+  approximateCity: string | null;
+  isp: string | null;
+  asn: string | null;
+  asnOrganization: string | null;
+  deviceType: string;
+  operatingSystem: string;
+  browser: string;
+  userAgentSummary: string;
+  ipIntelProvider: string;
+  ipIntelStatus: string;
+  ipIntelError: string | null;
+  vpnDetectionStatus: string;
+  proxyDetectionStatus: string;
+  torDetectionStatus: string;
+  isVpn: boolean | null;
+  isProxy: boolean | null;
+  isResidentialProxy: boolean | null;
+  isDatacenterProxy: boolean | null;
+  isTor: boolean | null;
+  createdAt: string;
+}
+
+export interface SecurityProviderStatusPayload {
+  provider: string;
+  endpoint: string;
+  configured: boolean;
+  trustedProxyHops: number;
+  cacheEntries: number;
+  locationNotice: string;
+  capabilities: {
+    geolocationApproximate: boolean;
+    ispAndAsn: boolean;
+    vpnProxyTorDetection: Record<string, unknown>;
+  };
+}
+
+export interface SecurityEventsPayload {
+  source: 'database' | 'runtime';
+  locationNotice: string;
+  events: AuthSecurityEventRecord[];
+}
+
 export interface ApiResult<T> {
   ok: boolean;
   status: number;
@@ -216,4 +271,14 @@ export const exchangeApi = {
       `/api/admin/purchase-orders/${encodeURIComponent(orderId)}/fulfil`,
       { method: 'POST', body: payload }
     ),
+
+  // Admin security & login activity
+  fetchSecurityProviderStatus: () =>
+    apiRequest<SecurityProviderStatusPayload>('/api/security/provider-status'),
+  fetchAdminSecurityEvents: (limit = 100, eventType?: string) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(limit));
+    if (eventType && eventType !== 'ALL') q.set('eventType', eventType);
+    return apiRequest<SecurityEventsPayload>(`/api/security/events?${q.toString()}`);
+  },
 };
