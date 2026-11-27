@@ -5,6 +5,7 @@ import type {
   AccountStatus,
   DepositStatus,
   KycStatus,
+  ManualPurchaseOrderStatus,
   MarketDataStatus,
   WithdrawalStatus,
 } from '../../types/domain';
@@ -125,6 +126,22 @@ export const DepositStatusLabel: React.FC<{ status: DepositStatus }> = ({ status
     APPROVED: { label: 'Approved', color: 'text-[#10C478]' },
     CREDITED: { label: 'Credited', color: 'text-[#10C478]' },
     REJECTED: { label: 'Rejected', color: 'text-[#F0525E]' },
+  };
+  const info = map[status];
+  return <span className={`text-xs font-semibold whitespace-nowrap ${info.color}`}>{info.label}</span>;
+};
+
+export const ManualPurchaseStatusLabel: React.FC<{ status: ManualPurchaseOrderStatus }> = ({
+  status,
+}) => {
+  const map: Record<ManualPurchaseOrderStatus, { label: string; color: string }> = {
+    PENDING_PAYMENT: { label: 'Pending Payment', color: 'text-[#D97706]' },
+    PAYMENT_SUBMITTED: { label: 'Payment Submitted', color: 'text-[#004AE2] dark:text-[#60A5FA]' },
+    UNDER_REVIEW: { label: 'Under Review', color: 'text-[#D97706]' },
+    APPROVED: { label: 'Approved', color: 'text-[#10C478]' },
+    COMPLETED: { label: 'Completed', color: 'text-[#10C478]' },
+    REJECTED: { label: 'Rejected', color: 'text-[#F0525E]' },
+    CANCELLED: { label: 'Cancelled', color: 'text-[#686D76] dark:text-[#7E828A]' },
   };
   const info = map[status];
   return <span className={`text-xs font-semibold whitespace-nowrap ${info.color}`}>{info.label}</span>;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canApproveDeposit, applyDepositApproval } from '../src/utils/exchangeEngine';
-import type { DepositRecord, WalletBalance, LedgerTransaction } from '../src/types/domain';
+import type { DepositRecord, ManualPurchaseOrder, WalletBalance } from '../src/types/domain';
 
 test('Deposit methods unavailable messages are correctly defined and distinct', () => {
   const unavailableMessages = {
@@ -76,6 +76,7 @@ test('canApproveDeposit enforces verification checks and prevents double crediti
     existingDeposits: [],
     balances,
     ledgerTransactions: [],
+    customerAccountStatus: 'active',
     adminUserId: 'admin-1',
     adminNote: 'Verified on-chain via TronScan',
     nowIso: new Date().toISOString(),
@@ -99,3 +100,66 @@ test('canApproveDeposit enforces verification checks and prevents double crediti
   );
   assert.equal(duplicateGate.allowed, false);
 });
+
+test('canApproveDeposit blocks closed accounts, insufficient confirmations, and active manual purchase txHash reuse', () => {
+  const baseDeposit: DepositRecord = {
+    id: 'dep-test-2',
+    userId: 'user-cust-2',
+    assetSymbol: 'USDT',
+    networkCode: 'TRC-20',
+    depositAddress: 'TTestAddress1234567890123456789012',
+    memoOrTag: null,
+    txHash: '0xSharedTxHash123456',
+    fromAddress: null,
+    amount: 250,
+    confirmations: 1,
+    requiredConfirmations: 20,
+    addressVerified: true,
+    networkVerified: true,
+    amountVerified: true,
+    duplicateChecked: true,
+    kytStatus: 'passed',
+    kytRiskScore: 0,
+    status: 'PENDING_ADMIN_REVIEW',
+    adminNote: null,
+    reviewedBy: null,
+    reviewedAt: null,
+    creditedTxId: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Insufficient confirmations blocked until finality reached
+  const lowConf = canApproveDeposit(baseDeposit, [], [], { customerAccountStatus: 'active' });
+  assert.equal(lowConf.allowed, false);
+  assert.match(lowConf.reason ?? '', /Insufficient confirmations/);
+
+  const finalized = { ...baseDeposit, confirmations: 20 };
+
+  // Closed account blocked even with full confirmations
+  const closedGate = canApproveDeposit(finalized, [], [], { customerAccountStatus: 'closed' });
+  assert.equal(closedGate.allowed, false);
+  assert.match(closedGate.reason ?? '', /closed/i);
+
+  // Active manual purchase order using the same txHash blocks deposit approval
+  const activeMpo = {
+    id: 'mpo-1',
+    receivingNetwork: 'TRC-20',
+    paymentTxHash: '0xsharedtxhash123456',
+    status: 'PAYMENT_SUBMITTED',
+  } as ManualPurchaseOrder;
+  const collisionGate = canApproveDeposit(finalized, [], [], {
+    customerAccountStatus: 'active',
+    existingManualPurchaseOrders: [activeMpo],
+  });
+  assert.equal(collisionGate.allowed, false);
+  assert.match(collisionGate.reason ?? '', /collides with an active manual purchase order/i);
+
+  // Rejected manual purchase order frees the txHash
+  const rejectedGate = canApproveDeposit(finalized, [], [], {
+    customerAccountStatus: 'active',
+    existingManualPurchaseOrders: [{ ...activeMpo, status: 'REJECTED' }],
+  });
+  assert.equal(rejectedGate.allowed, true);
+});
+

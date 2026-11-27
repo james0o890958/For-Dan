@@ -5,6 +5,7 @@ import type {
   KycStatus,
   LedgerEntry,
   LedgerTransaction,
+  ManualPurchaseOrder,
   NetworkConfig,
   RiskLevel,
   WalletBalance,
@@ -162,8 +163,18 @@ export function previewWithdrawal(params: {
 export function canApproveDeposit(
   deposit: DepositRecord,
   existingDeposits: DepositRecord[],
-  existingLedgerTransactions: LedgerTransaction[]
+  existingLedgerTransactions: LedgerTransaction[],
+  options?: {
+    customerAccountStatus?: AccountStatus;
+    existingManualPurchaseOrders?: ManualPurchaseOrder[];
+  }
 ): { allowed: boolean; reason: string | null } {
+  if (options?.customerAccountStatus && options.customerAccountStatus !== 'active') {
+    return {
+      allowed: false,
+      reason: `Cannot approve deposit for ${options.customerAccountStatus} customer account.`,
+    };
+  }
   if (deposit.status !== 'PENDING_ADMIN_REVIEW') {
     return {
       allowed: false,
@@ -182,15 +193,32 @@ export function canApproveDeposit(
   if (!deposit.duplicateChecked) {
     return { allowed: false, reason: 'Duplicate transaction check has not passed.' };
   }
+  const normalizedHash = deposit.txHash.trim().toLowerCase();
+  const normalizedNet = deposit.networkCode.trim().toUpperCase();
   const duplicateTx = existingDeposits.some(
     (d) =>
       d.id !== deposit.id &&
-      d.networkCode === deposit.networkCode &&
-      d.txHash.toLowerCase() === deposit.txHash.toLowerCase() &&
+      d.networkCode.trim().toUpperCase() === normalizedNet &&
+      d.txHash.trim().toLowerCase() === normalizedHash &&
       (d.status === 'APPROVED' || d.status === 'CREDITED')
   );
   if (duplicateTx) {
     return { allowed: false, reason: 'Duplicate blockchain transaction hash detected.' };
+  }
+  if (options?.existingManualPurchaseOrders) {
+    const mpoCollision = options.existingManualPurchaseOrders.some(
+      (o) =>
+        o.receivingNetwork.trim().toUpperCase() === normalizedNet &&
+        (o.paymentTxHash?.trim().toLowerCase() ?? '') === normalizedHash &&
+        o.status !== 'REJECTED' &&
+        o.status !== 'CANCELLED'
+    );
+    if (mpoCollision) {
+      return {
+        allowed: false,
+        reason: 'Transaction hash collides with an active manual purchase order on this network.',
+      };
+    }
   }
   if (deposit.confirmations < deposit.requiredConfirmations) {
     return {
@@ -216,6 +244,8 @@ export function applyDepositApproval(params: {
   existingDeposits: DepositRecord[];
   balances: WalletBalance[];
   ledgerTransactions: LedgerTransaction[];
+  customerAccountStatus?: AccountStatus;
+  existingManualPurchaseOrders?: ManualPurchaseOrder[];
   adminUserId: string;
   adminNote: string;
   nowIso: string;
@@ -231,7 +261,11 @@ export function applyDepositApproval(params: {
   const gate = canApproveDeposit(
     params.deposit,
     params.existingDeposits,
-    params.ledgerTransactions
+    params.ledgerTransactions,
+    {
+      customerAccountStatus: params.customerAccountStatus,
+      existingManualPurchaseOrders: params.existingManualPurchaseOrders,
+    }
   );
   if (!gate.allowed) {
     return { ok: false, error: gate.reason ?? 'Deposit verification failed.' };

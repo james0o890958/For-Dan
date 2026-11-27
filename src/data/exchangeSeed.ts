@@ -6,12 +6,14 @@ import type {
   KycSubmission,
   LedgerEntry,
   LedgerTransaction,
+  ManualPurchaseOrder,
   MarketPrice,
   MarketSettings,
   NetworkConfig,
   NotificationCampaign,
   NotificationItem,
   Profile,
+  ReceivingAddress,
   ReconciliationRun,
   SpotOrder,
   Trade,
@@ -314,6 +316,8 @@ export const INITIAL_LEDGER_ENTRIES: LedgerEntry[] = [];
 export const INITIAL_NOTIFICATION_CAMPAIGNS: NotificationCampaign[] = [];
 export const INITIAL_NOTIFICATIONS: NotificationItem[] = [];
 export const INITIAL_AUDIT_LOGS: AdminAuditLog[] = [];
+export const INITIAL_RECEIVING_ADDRESSES: ReceivingAddress[] = [];
+export const INITIAL_MANUAL_PURCHASE_ORDERS: ManualPurchaseOrder[] = [];
 
 export const INITIAL_RECONCILIATION_RUNS: ReconciliationRun[] = [
   {

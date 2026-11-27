@@ -1,11 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
-import type { PublicMarketTrade, SpotOrder, Trade, TradeSide } from '../../types/domain';
+import type {
+  ManualPurchaseOrder,
+  PublicMarketTrade,
+  SpotOrder,
+  Trade,
+  TradeSide,
+} from '../../types/domain';
 import { formatCryptoPrice, formatQty, formatUsdt } from '../../utils/tradingMath';
 import { partitionSpotOrders } from '../../utils/tradingWorkspace';
+import { ManualPurchaseStatusLabel } from './CommonPrimitives';
 
-type HistoryTab = 'market_trades' | 'open_orders' | 'order_history' | 'my_trades';
+type HistoryTab =
+  | 'market_trades'
+  | 'purchase_orders'
+  | 'open_orders'
+  | 'order_history'
+  | 'my_trades';
 
 function formatClockTime(iso: string): string {
   const d = new Date(iso);
@@ -36,15 +48,19 @@ export const TradeHistoryPanel: React.FC<{
   showAccountTabs?: boolean;
   userTrades?: Trade[];
   userOrders?: SpotOrder[];
+  userManualOrders?: ManualPurchaseOrder[];
   isAuthenticated?: boolean;
   onSelectPrice?: (price: number, side: TradeSide) => void;
+  onInspectManualOrder?: (order: ManualPurchaseOrder) => void;
 }> = ({
   symbol,
   showAccountTabs = true,
   userTrades = [],
   userOrders = [],
+  userManualOrders = [],
   isAuthenticated = false,
   onSelectPrice,
+  onInspectManualOrder,
 }) => {
   const [activeTab, setActiveTab] = useState<HistoryTab>('market_trades');
   const [pairFilter, setPairFilter] = useState<'current' | 'all'>('all');
@@ -135,6 +151,14 @@ export const TradeHistoryPanel: React.FC<{
     [filteredUserOrders]
   );
 
+  const filteredManualOrders = useMemo(() => {
+    return userManualOrders.filter((o) => {
+      if (pairFilter === 'current' && o.pairSymbol !== symbol) return false;
+      if (sideFilter === 'sell') return false;
+      return true;
+    });
+  }, [userManualOrders, pairFilter, sideFilter, symbol]);
+
   const baseAsset = symbol.split('/')[0] || 'ASSET';
 
   return (
@@ -158,6 +182,19 @@ export const TradeHistoryPanel: React.FC<{
               }`}
             >
               Market Trades ({symbol})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'purchase_orders'}
+              onClick={() => setActiveTab('purchase_orders')}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                activeTab === 'purchase_orders'
+                  ? 'bg-[#004AE2] text-white'
+                  : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8] hover:text-[#111214] dark:hover:text-white'
+              }`}
+            >
+              Purchase Orders ({userManualOrders.length})
             </button>
             <button
               type="button"
@@ -359,7 +396,98 @@ export const TradeHistoryPanel: React.FC<{
         </div>
       )}
 
-      {/* Market Trades & Account Order/Trade Tabs */}
+      {/* Tab 1b: Manual Purchase Orders */}
+      {showAccountTabs && activeTab === 'purchase_orders' && (
+        <div data-testid="manual-purchase-orders-list">
+          {!isAuthenticated ? (
+            <div className="py-8 text-center space-y-2">
+              <p className="text-xs font-medium text-[#686D76] dark:text-[#7E828A]">
+                Sign in to view your manual crypto purchase orders and payment instructions.
+              </p>
+              <Link
+                to="/login"
+                className="inline-flex px-4 py-2 rounded-lg bg-[#004AE2] text-white text-xs font-semibold"
+              >
+                Sign in
+              </Link>
+            </div>
+          ) : filteredManualOrders.length === 0 ? (
+            <div className="py-8 px-4 text-center rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#22242A]">
+              <p className="text-xs font-semibold text-[#111214] dark:text-[#F4F5F7]">
+                No Manual Purchase Orders
+              </p>
+              <p className="mt-1 text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                Buy crypto requests submitted through the manual purchase workflow appear here.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[#686D76] dark:text-[#7E828A] border-b border-[#E2E4E9] dark:border-[#22242A]">
+                    <th className="py-2 pr-3 font-medium">Order Ref</th>
+                    <th className="py-2 pr-3 font-medium">Pair / Type</th>
+                    <th className="py-2 pr-3 font-medium text-right">Payment</th>
+                    <th className="py-2 pr-3 font-medium text-right">Crypto Amount</th>
+                    <th className="py-2 pr-3 font-medium">Network</th>
+                    <th className="py-2 pr-3 font-medium">Tx Hash</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 pr-3 font-medium">Admin Note</th>
+                    <th className="py-2 font-medium text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23] font-mono-num">
+                  {filteredManualOrders.map((o) => (
+                    <tr key={o.id}>
+                      <td className="py-2.5 pr-3 whitespace-nowrap">
+                        <p className="font-semibold text-[#111214] dark:text-[#F4F5F7]">{o.orderRef}</p>
+                        <p className="text-[10px] text-[#686D76] dark:text-[#7E828A]">
+                          {formatDateTime(o.createdAt)}
+                        </p>
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans">
+                        <span className="font-semibold">{o.pairSymbol}</span>
+                        <span className="ml-1.5 text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                          {o.orderType} BUY
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-right">
+                        {formatUsdt(o.totalPaymentAmount)} {o.paymentAsset}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right font-semibold">
+                        {formatQty(o.finalCryptoAmount ?? o.estimatedCryptoAmount)} {o.baseAsset}
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans text-[#686D76] dark:text-[#9CA0A8]">
+                        {o.receivingNetwork}
+                      </td>
+                      <td className="py-2.5 pr-3 max-w-[140px] truncate text-[#686D76] dark:text-[#7E828A]">
+                        {o.paymentTxHash || 'Awaiting payment'}
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans">
+                        <ManualPurchaseStatusLabel status={o.status} />
+                      </td>
+                      <td className="py-2.5 pr-3 font-sans text-[#686D76] dark:text-[#9CA0A8] max-w-[180px] truncate">
+                        {o.rejectionReason || o.adminRemark || '—'}
+                      </td>
+                      <td className="py-2.5 text-right font-sans">
+                        {onInspectManualOrder && (
+                          <button
+                            type="button"
+                            onClick={() => onInspectManualOrder(o)}
+                            className="text-xs font-semibold text-[#004AE2] dark:text-[#60A5FA] hover:underline whitespace-nowrap"
+                          >
+                            {o.status === 'PENDING_PAYMENT' ? 'Pay / Submit Proof' : 'Details'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Tab 2: Open Orders */}
       {showAccountTabs && activeTab === 'open_orders' && (

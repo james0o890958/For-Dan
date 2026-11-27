@@ -57,6 +57,7 @@ export type NotificationCategory =
   | 'Withdrawal'
   | 'KYC'
   | 'Market'
+  | 'Trade'
   | 'Compliance'
   | 'Notice';
 
@@ -405,4 +406,98 @@ export interface ReconciliationRun {
   status: 'matched' | 'mismatch' | 'unconfigured';
   details: string;
   createdAt: string;
+}
+
+export type ManualPurchaseOrderStatus =
+  | 'PENDING_PAYMENT'
+  | 'PAYMENT_SUBMITTED'
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'COMPLETED'
+  | 'CANCELLED';
+
+export interface ReceivingAddressAuditEvent {
+  action: 'created' | 'updated' | 'activated' | 'disabled';
+  actorUserId: string;
+  actorLabel: string;
+  note: string;
+  createdAt: string;
+}
+
+export interface ReceivingAddress {
+  id: string;
+  assetSymbol: string;
+  networkCode: string;
+  address: string;
+  memoOrTag: string | null;
+  label: string;
+  isActive: boolean;
+  assignedBy: string;
+  assignedByLabel: string;
+  createdAt: string;
+  updatedAt: string;
+  auditHistory: ReceivingAddressAuditEvent[];
+}
+
+export interface ManualPurchaseVerificationChecklist {
+  txHashChecked: boolean;
+  addressMatched: boolean;
+  networkMatched: boolean;
+  amountVerified: boolean;
+  duplicateClear: boolean;
+}
+
+export interface ManualPurchaseOrderReviewEvent {
+  id: string;
+  fromStatus: ManualPurchaseOrderStatus | null;
+  toStatus: ManualPurchaseOrderStatus;
+  actorUserId: string;
+  actorLabel: string;
+  actorRole: AppRole;
+  remark: string;
+  createdAt: string;
+}
+
+export interface ManualPurchaseOrder {
+  id: string;
+  orderRef: string;
+  userId: string;
+  pairSymbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+  side: 'buy';
+  orderType: 'MARKET' | 'LIMIT';
+  requestedQuoteAmount: number;
+  limitPrice: number | null;
+  referencePrice: number;
+  feeRate: number;
+  estimatedFeeUsdt: number;
+  estimatedCryptoAmount: number;
+  totalPaymentAmount: number;
+  paymentAsset: string;
+  receivingNetwork: string;
+  receivingAddressId: string;
+  receivingAddress: string;
+  receivingMemoOrTag: string | null;
+  paymentTxHash: string | null;
+  actualAmountSent: number | null;
+  paymentNote: string | null;
+  paymentSubmittedAt: string | null;
+  status: ManualPurchaseOrderStatus;
+  verificationChecklist: ManualPurchaseVerificationChecklist;
+  finalCryptoAmount: number | null;
+  finalFeeUsdt: number | null;
+  adminRemark: string | null;
+  rejectionReason: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  fulfilledBy: string | null;
+  fulfilledAt: string | null;
+  creditedTxId: string | null;
+  idempotencyKey: string;
+  version: number;
+  reviewHistory: ManualPurchaseOrderReviewEvent[];
+  createdAt: string;
+  updatedAt: string;
 }

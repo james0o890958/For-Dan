@@ -476,7 +476,7 @@ async function main() {
     `);
     record('Environment & Supabase auth stub bootstrap', true, `${target.safeTarget} (${pgVersion})`);
 
-    // 2. Execute migrations 001-008 sequentially inside transactions
+    // 2. Execute migrations 001-009 sequentially inside transactions
     const migrationsDir = path.resolve(process.cwd(), 'db', 'migrations');
     const files = (await fs.readdir(migrationsDir))
       .filter((f) => f.endsWith('.sql'))
@@ -490,6 +490,7 @@ async function main() {
       '006_security_and_rls_hardening.sql',
       '007_account_closure_concurrency_and_approval_hardening.sql',
       '008_closed_account_integrity_hardening.sql',
+      '009_manual_crypto_purchases.sql',
     ]);
 
     for (const file of files) {
@@ -580,7 +581,7 @@ async function main() {
     ]) {
       await admin.query(
         `INSERT INTO auth.users (id, email, email_confirmed_at, raw_user_meta_data)
-         VALUES ($1, $2, NOW(), jsonb_build_object('full_name', $3))`,
+         VALUES ($1, $2, NOW(), jsonb_build_object('full_name', $3::text))`,
         [id, email, name]
       );
     }
@@ -728,12 +729,19 @@ async function main() {
       [U_CUST_2]
     );
 
+    const da2Res = await admin.query<{ id: string }>(
+      `INSERT INTO public.deposit_addresses (user_id, asset_symbol, network_code, custody_vault_id, address, memo_or_tag, is_active)
+       VALUES ($1, 'USDT', 'ERC-20', 'vault-test-2', '0x2222222222222222222222222222222222222222', NULL, TRUE)
+       RETURNING id`,
+      [U_CUST_2]
+    );
+
     for (const [tbl, cond, param] of [
       ['wallet_balances', 'user_id = $2', U_CUST_2],
       ['deposits', 'id = $2', depRes.rows[0].id],
       ['withdrawals', 'id = $2', wdRes.rows[0].id],
       ['spot_orders', 'id = $2', ordRes.rows[0].id],
-      ['deposit_addresses', 'id = $2', daId],
+      ['deposit_addresses', 'id = $2', da2Res.rows[0].id],
     ]) {
       const err = await expectSqlError(
         admin,
@@ -876,9 +884,12 @@ async function main() {
 
     try {
       // 7a. Advisory lock serialization + savepoint rollback persistence + unrelated user non-blocking
+      // Note: pg_advisory_xact_lock acquired at top-level persists across subtransaction savepoint rollbacks;
+      // locks acquired strictly inside a rolled-back savepoint are released upon ROLLBACK TO SAVEPOINT.
       await sA.query('BEGIN');
-      await sA.query('SAVEPOINT sp1');
       await sA.query('SELECT public.acquire_user_account_lock($1)', [U_CUST_3]);
+      await sA.query('SAVEPOINT sp1');
+      await sA.query(`SELECT 1 FROM public.profiles WHERE id = $1`, [U_CUST_3]);
       await sA.query('ROLLBACK TO SAVEPOINT sp1');
 
       // Unrelated user lock on sB must not block
@@ -886,7 +897,7 @@ async function main() {
       await sB.query('SELECT public.acquire_user_account_lock($1)', [U_CUST_4]);
       await sB.query('ROLLBACK');
 
-      // Same user lock on sB MUST block even after sA rolled back savepoint sp1
+      // Same user lock on sB MUST still block after sA rolled back savepoint sp1
       await sB.query('BEGIN');
       const advWait = sB
         .query('SELECT public.acquire_user_account_lock($1)', [U_CUST_3])
@@ -1003,6 +1014,117 @@ async function main() {
       await sA.end();
       await sB.end();
     }
+
+    // 8. Migration 009 Manual Crypto Purchase Runtime Verification (triggers, RLS, partial unique tx_hash, closure guard)
+    const fn009Check = await admin.query<{ proname: string; prosecdef: boolean; proconfig: string[] | null; anon_exec: boolean; auth_exec: boolean }>(`
+      SELECT p.proname, p.prosecdef, p.proconfig,
+        has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_exec,
+        has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth_exec
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = 'enforce_manual_purchase_order_rules'
+    `);
+    assert.equal(fn009Check.rows.length, 1);
+    assert.equal(fn009Check.rows[0].prosecdef, true);
+    assert.ok(fn009Check.rows[0].proconfig?.includes('search_path=public'));
+    assert.equal(fn009Check.rows[0].anon_exec, false);
+    assert.equal(fn009Check.rows[0].auth_exec, false);
+
+    const recAddrRes = await admin.query<{ id: string }>(
+      `INSERT INTO public.receiving_addresses (asset_symbol, network_code, address, label, is_active, assigned_by)
+       VALUES ('USDT', 'TRC-20', 'TVerifyRuntimeReceiving1111111111111', 'Verify Recv', TRUE, $1)
+       RETURNING id`,
+      [U_ADMIN_1]
+    );
+    const recAddrId = recAddrRes.rows[0].id;
+    await admin.query(`UPDATE public.profiles SET kyc_status = 'approved' WHERE id = $1`, [U_CUST_2]);
+
+    const mpo1Res = await admin.query<{ id: string }>(
+      `INSERT INTO public.manual_purchase_orders (
+         order_ref, user_id, pair_symbol, base_asset, quote_asset, side, order_type,
+         requested_quote_amount, reference_price, fee_rate, estimated_fee_usdt, estimated_crypto_amount,
+         total_payment_amount, payment_asset, receiving_network, receiving_address_id, receiving_address,
+         status, idempotency_key
+       ) VALUES (
+         'MPO-VERIFY-001', $1, 'BTC/USDT', 'BTC', 'USDT', 'buy', 'MARKET',
+         1000, 90000, 0.001, 1, 0.0111, 1000, 'USDT', 'TRC-20', $2, 'TVerifyRuntimeReceiving1111111111111',
+         'PENDING_PAYMENT', 'mpo-verify-idem-1'
+       ) RETURNING id`,
+      [U_CUST_2, recAddrId]
+    );
+    const mpo1Id = mpo1Res.rows[0].id;
+
+    // Cannot close customer account while unresolved manual_purchase_order exists
+    await expectSqlError(
+      admin,
+      `SELECT public.close_customer_account($1, FALSE)`,
+      [U_CUST_2],
+      /unresolved manual purchase orders remain/,
+      'P0001'
+    );
+
+    // Invalid state transition PENDING_PAYMENT -> COMPLETED blocked by trigger
+    await expectSqlError(
+      admin,
+      `UPDATE public.manual_purchase_orders SET status = 'COMPLETED', fulfilled_by = $1, fulfilled_at = NOW(), credited_tx_id = $2, final_crypto_amount = 0.0111, payment_tx_hash = '0xverifyhash1234' WHERE id = $3`,
+      [U_ADMIN_1, mpo1Id, mpo1Id],
+      /Invalid manual purchase status transition/,
+      'P0001'
+    );
+
+    // Submit payment -> duplicate tx_hash blocked on second active order -> rejected order frees tx_hash reuse
+    await admin.query(
+      `UPDATE public.manual_purchase_orders
+       SET status = 'PAYMENT_SUBMITTED', payment_tx_hash = '0xVerifyDupHash123456', actual_amount_sent = 1000
+       WHERE id = $1`,
+      [mpo1Id]
+    );
+
+    // Payment immutability after submission
+    await expectSqlError(
+      admin,
+      `UPDATE public.manual_purchase_orders SET payment_tx_hash = '0xTamperedHash99999' WHERE id = $1`,
+      [mpo1Id],
+      /immutable once submitted/,
+      'P0001'
+    );
+
+    // Incomplete checklist approval blocked
+    await admin.query(`UPDATE public.manual_purchase_orders SET status = 'UNDER_REVIEW' WHERE id = $1`, [mpo1Id]);
+    await expectSqlError(
+      admin,
+      `UPDATE public.manual_purchase_orders SET status = 'APPROVED', tx_hash_checked = TRUE WHERE id = $1`,
+      [mpo1Id],
+      /All verification checklist checks must be true/,
+      'P0001'
+    );
+
+    // Partial unique index blocks duplicate active payment_tx_hash (case-insensitive)
+    const mpo2Res = await admin.query<{ id: string }>(
+      `INSERT INTO public.manual_purchase_orders (
+         order_ref, user_id, pair_symbol, base_asset, quote_asset, side, order_type,
+         requested_quote_amount, reference_price, fee_rate, estimated_fee_usdt, estimated_crypto_amount,
+         total_payment_amount, payment_asset, receiving_network, receiving_address_id, receiving_address,
+         status, idempotency_key
+       ) VALUES (
+         'MPO-VERIFY-002', $1, 'BTC/USDT', 'BTC', 'USDT', 'buy', 'MARKET',
+         500, 90000, 0.001, 0.5, 0.00555, 500, 'USDT', 'TRC-20', $2, 'TVerifyRuntimeReceiving1111111111111',
+         'PENDING_PAYMENT', 'mpo-verify-idem-2'
+       ) RETURNING id`,
+      [U_CUST_2, recAddrId]
+    );
+    await expectSqlError(
+      admin,
+      `UPDATE public.manual_purchase_orders SET status = 'PAYMENT_SUBMITTED', payment_tx_hash = '0xverifyduphash123456', actual_amount_sent = 500 WHERE id = $1`,
+      [mpo2Res.rows[0].id],
+      /uq_manual_purchase_orders_network_tx_hash/,
+      '23505'
+    );
+    record(
+      'Migration 009 manual purchase rules, triggers & unique tx_hash index',
+      true,
+      'Verified trigger state guards, payment immutability, checklist gate, closure lock, and 23505 duplicate tx_hash index'
+    );
 
     const failed = results.filter((r) => !r.passed);
     console.log(`\nSummary: ${results.length} checks, ${failed.length} failed.`);

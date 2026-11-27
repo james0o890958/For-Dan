@@ -12,9 +12,14 @@ export const AdminDepositsPage: React.FC = () => {
     ledgerTransactions,
     profiles,
     depositAddresses,
+    receivingAddresses,
+    manualPurchaseOrders,
+    confirmDepositFinality,
     reviewDeposit,
     updateNetworkConfig,
     assignDepositAddress,
+    saveReceivingAddress,
+    toggleReceivingAddressStatus,
   } = useAppState();
 
   const [tab, setTab] = useState<'queue' | 'networks' | 'addresses'>('queue');
@@ -27,6 +32,16 @@ export const AdminDepositsPage: React.FC = () => {
   const [addrNetworkCode, setAddrNetworkCode] = useState(addrNetworks[0]?.code ?? 'TRC-20');
   const [addrValue, setAddrValue] = useState('');
   const [addrMemo, setAddrMemo] = useState('');
+
+  const [recAsset, setRecAsset] = useState('USDT');
+  const recNetworks = useMemo(
+    () => networks.filter((n) => n.assetSymbol === recAsset),
+    [networks, recAsset]
+  );
+  const [recNetworkCode, setRecNetworkCode] = useState('TRC-20');
+  const [recLabel, setRecLabel] = useState('');
+  const [recAddress, setRecAddress] = useState('');
+  const [recMemo, setRecMemo] = useState('');
 
   const [editingNetId, setEditingNetId] = useState<string | null>(null);
   const [netForm, setNetForm] = useState({
@@ -74,9 +89,9 @@ export const AdminDepositsPage: React.FC = () => {
     if (res.ok) setEditingNetId(null);
   };
 
-  const handleAssignAddress = (e: React.FormEvent) => {
+  const handleAssignAddress = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = assignDepositAddress({
+    const res = await assignDepositAddress({
       userId: addrCustomerUserId,
       assetSymbol: addrAsset,
       networkCode: addrNetworkCode,
@@ -87,6 +102,24 @@ export const AdminDepositsPage: React.FC = () => {
     if (res.ok) {
       setAddrValue('');
       setAddrMemo('');
+    }
+  };
+
+  const handleSaveReceivingAddress = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = await saveReceivingAddress({
+      assetSymbol: recAsset,
+      networkCode: recNetworkCode,
+      label: recLabel,
+      address: recAddress,
+      memoOrTag: recMemo,
+      isActive: true,
+    });
+    setFeedback({ ok: res.ok, text: res.message });
+    if (res.ok) {
+      setRecLabel('');
+      setRecAddress('');
+      setRecMemo('');
     }
   };
 
@@ -126,7 +159,7 @@ export const AdminDepositsPage: React.FC = () => {
                   : 'bg-[#E8EAEE] dark:bg-[#242528] text-[#686D76] dark:text-[#9CA0A8]'
               }`}
             >
-              Deposit Address Management ({depositAddresses.length})
+              Deposit &amp; Receiving Addresses ({depositAddresses.length + receivingAddresses.length})
             </button>
           </div>
 
@@ -140,7 +173,7 @@ export const AdminDepositsPage: React.FC = () => {
           )}
         </div>
 
-        {tab === 'queue' ? (
+        {tab === 'queue' && (
           <div className="space-y-6">
             <div className="rounded-xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-4 text-xs text-[#686D76] dark:text-[#7E828A]">
               Strict verification policy: Deposits can only be approved and credited once after transaction hash detection, destination address matching, network &amp; amount verification, confirmation finality, duplicate check, and KYT screening all pass.
@@ -157,7 +190,10 @@ export const AdminDepositsPage: React.FC = () => {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {activeQueue.map((dep) => {
                     const customer = profileMap.get(dep.userId);
-                    const gate = canApproveDeposit(dep, deposits, ledgerTransactions);
+                    const gate = canApproveDeposit(dep, deposits, ledgerTransactions, {
+                      customerAccountStatus: customer?.accountStatus,
+                      existingManualPurchaseOrders: manualPurchaseOrders,
+                    });
                     return (
                       <div
                         key={dep.id}
@@ -232,12 +268,24 @@ export const AdminDepositsPage: React.FC = () => {
                           />
                         </div>
 
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          {dep.confirmations < dep.requiredConfirmations && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const res = await confirmDepositFinality(dep.id);
+                                setFeedback({ ok: res.ok, text: res.message });
+                              }}
+                              className="h-10 px-4 rounded-full bg-[#004AE2] text-white text-xs font-semibold hover:opacity-95"
+                            >
+                              Verify Block Finality ({dep.requiredConfirmations}/{dep.requiredConfirmations})
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={!gate.allowed}
-                            onClick={() => {
-                              const res = reviewDeposit(dep.id, 'approved', notes[dep.id] ?? '');
+                            onClick={async () => {
+                              const res = await reviewDeposit(dep.id, 'approved', notes[dep.id] ?? '');
                               setFeedback({ ok: res.ok, text: res.message });
                             }}
                             className="flex-1 h-10 rounded-full bg-[#10C478] text-white text-xs font-semibold hover:opacity-95 disabled:opacity-45 disabled:cursor-not-allowed"
@@ -246,8 +294,8 @@ export const AdminDepositsPage: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => {
-                              const res = reviewDeposit(dep.id, 'rejected', notes[dep.id] ?? '');
+                            onClick={async () => {
+                              const res = await reviewDeposit(dep.id, 'rejected', notes[dep.id] ?? '');
                               setFeedback({ ok: res.ok, text: res.message });
                             }}
                             className="flex-1 h-10 rounded-full bg-[#F0525E] text-white text-xs font-semibold hover:opacity-95"
@@ -318,7 +366,9 @@ export const AdminDepositsPage: React.FC = () => {
               )}
             </section>
           </div>
-        ) : (
+        )}
+
+        {tab === 'networks' && (
           <div className="space-y-4">
             <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] overflow-hidden">
               <div className="overflow-x-auto">
@@ -651,6 +701,215 @@ export const AdminDepositsPage: React.FC = () => {
                   </table>
                 </div>
               )}
+            </div>
+
+            {/* Platform Manual Purchase Receiving Address Registry */}
+            <div className="border-t border-[#E2E4E9] dark:border-[#22242A] pt-6 space-y-6">
+              <form
+                onSubmit={handleSaveReceivingAddress}
+                data-testid="receiving-address-form"
+                className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-6 space-y-4 max-w-2xl"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold">
+                      Manual Crypto Purchase Receiving Addresses
+                    </h2>
+                    <p className="text-xs text-[#686D76] dark:text-[#7E828A] mt-1">
+                      Configure platform receiving addresses displayed to customers requesting manual crypto purchases. Disabling an address prevents new selections without mutating already-submitted orders.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label htmlFor="rec-asset" className="block text-xs font-medium mb-1">
+                      Payment Asset
+                    </label>
+                    <select
+                      id="rec-asset"
+                      value={recAsset}
+                      onChange={(e) => {
+                        const nextAsset = e.target.value;
+                        setRecAsset(nextAsset);
+                        const match = networks.find((n) => n.assetSymbol === nextAsset);
+                        if (match) setRecNetworkCode(match.code);
+                      }}
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs"
+                    >
+                      {['USDT', 'USDC', 'BTC', 'ETH', 'SOL'].map((sym) => (
+                        <option key={sym} value={sym}>
+                          {sym}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rec-net" className="block text-xs font-medium mb-1">
+                      Transfer Network
+                    </label>
+                    <select
+                      id="rec-net"
+                      value={recNetworkCode}
+                      onChange={(e) => setRecNetworkCode(e.target.value)}
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs"
+                    >
+                      {(recNetworks.length > 0
+                        ? recNetworks.map((n) => n.code)
+                        : ['TRC-20', 'ERC-20', 'BEP-20', 'SOL']
+                      ).map((code) => (
+                        <option key={code} value={code}>
+                          {code}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label htmlFor="rec-label" className="block text-xs font-medium mb-1">
+                      Wallet Label
+                    </label>
+                    <input
+                      id="rec-label"
+                      type="text"
+                      value={recLabel}
+                      onChange={(e) => setRecLabel(e.target.value)}
+                      placeholder="e.g. Settlement Desk TRC-20"
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="sm:col-span-2">
+                    <label htmlFor="rec-address" className="block text-xs font-medium mb-1">
+                      Receiving Address
+                    </label>
+                    <input
+                      id="rec-address"
+                      data-testid="rec-address-input"
+                      type="text"
+                      required
+                      value={recAddress}
+                      onChange={(e) => setRecAddress(e.target.value)}
+                      placeholder="Enter verified custody / treasury receiving address"
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] font-mono-num text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="rec-memo" className="block text-xs font-medium mb-1">
+                      Memo / Tag (Optional)
+                    </label>
+                    <input
+                      id="rec-memo"
+                      type="text"
+                      value={recMemo}
+                      onChange={(e) => setRecMemo(e.target.value)}
+                      placeholder="Optional memo or tag"
+                      className="w-full h-11 px-3 rounded-xl bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#D4D7DF] dark:border-[#2B2C32] font-mono-num text-xs"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  data-testid="save-receiving-address-button"
+                  className="px-6 h-11 rounded-full bg-[#004AE2] text-white text-xs font-semibold hover:bg-[#003ec0]"
+                >
+                  Save Receiving Address
+                </button>
+              </form>
+
+              <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] overflow-hidden">
+                <div className="px-5 py-4 border-b border-[#E2E4E9] dark:border-[#22242A]">
+                  <h3 className="text-sm font-semibold">
+                    Configured Receiving Addresses ({receivingAddresses.length})
+                  </h3>
+                </div>
+                {receivingAddresses.length === 0 ? (
+                  <p className="p-5 text-xs text-[#686D76] dark:text-[#7E828A]">
+                    No manual purchase receiving addresses configured yet. Add an address above before customers request manual purchases.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-[#E8EAEE] dark:bg-[#262629] text-left text-[#686D76] dark:text-[#7E828A]">
+                          <th className="py-3 px-4 font-medium">Asset / Network</th>
+                          <th className="py-3 px-4 font-medium">Label</th>
+                          <th className="py-3 px-4 font-medium">Address</th>
+                          <th className="py-3 px-4 font-medium">Memo</th>
+                          <th className="py-3 px-4 font-medium">Status</th>
+                          <th className="py-3 px-4 font-medium">Audit Trail</th>
+                          <th className="py-3 px-4 font-medium text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23]">
+                        {receivingAddresses.map((ra) => {
+                          const assignedBy = profileMap.get(ra.assignedBy);
+                          const latestAudit = ra.auditHistory[0];
+                          return (
+                            <tr key={ra.id}>
+                              <td className="py-3 px-4 font-semibold">
+                                {ra.assetSymbol} ({ra.networkCode})
+                              </td>
+                              <td className="py-3 px-4">
+                                <p className="font-medium">{ra.label}</p>
+                                <p className="text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                                  By {assignedBy?.fullName ?? ra.assignedByLabel}
+                                </p>
+                              </td>
+                              <td className="py-3 px-4 font-mono-num break-all max-w-[220px]">
+                                {ra.address}
+                              </td>
+                              <td className="py-3 px-4 font-mono-num">{ra.memoOrTag || '—'}</td>
+                              <td className="py-3 px-4 font-semibold">
+                                <span
+                                  className={
+                                    ra.isActive ? 'text-[#10C478]' : 'text-[#686D76] dark:text-[#7E828A]'
+                                  }
+                                >
+                                  {ra.isActive ? 'ACTIVE' : 'DISABLED'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-[11px] text-[#686D76] dark:text-[#7E828A]">
+                                <p>{latestAudit?.note || 'Configured'}</p>
+                                <p className="font-mono-num">
+                                  {ra.auditHistory.length} event(s) ·{' '}
+                                  {new Date(ra.updatedAt).toLocaleString()}
+                                </p>
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const res = await toggleReceivingAddressStatus(
+                                      ra.id,
+                                      !ra.isActive,
+                                      ra.isActive
+                                        ? 'Disabled by admin from address registry.'
+                                        : 'Reactivated by admin from address registry.'
+                                    );
+                                    setFeedback({ ok: res.ok, text: res.message });
+                                  }}
+                                  className={`px-3 py-1.5 rounded-full text-xs font-semibold ${
+                                    ra.isActive
+                                      ? 'bg-[#E8EAEE] dark:bg-[#242528] text-[#F0525E]'
+                                      : 'bg-[#10C478] text-white'
+                                  }`}
+                                >
+                                  {ra.isActive ? 'Disable' : 'Activate'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

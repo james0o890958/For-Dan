@@ -199,10 +199,10 @@ export const WalletPage: React.FC<{
     setDepFeedback({ ok: res.ok, text: res.message });
   };
 
-  const handleSubmitDepositForm = (e: React.FormEvent) => {
+  const handleSubmitDepositForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setDepSubmitFeedback(null);
-    const res = submitDeposit({
+    const res = await submitDeposit({
       assetSymbol: depAsset,
       networkCode: depNetworkCode,
       amount: Number(depAmountInput),

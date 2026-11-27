@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import type { TradingPair, TradeSide } from '../../types/domain';
+import type { ReceivingAddress, TradingPair, TradeSide } from '../../types/domain';
+import type { ManualPurchaseQuote } from '../../utils/manualPurchaseEngine';
 import { formatMarketPriceDisplay } from '../../utils/overviewModel';
 import { formatQty, formatUsdt } from '../../utils/tradingMath';
 import type { OrderEntryType, TradingOrderEvaluation } from '../../utils/tradingWorkspace';
@@ -22,6 +23,9 @@ interface OrderEntryPanelProps {
   availableBase: number;
   reservedBase: number;
   evaluation: TradingOrderEvaluation;
+  activeReceivingAddresses?: ReceivingAddress[];
+  selectedReceivingAddressId?: string;
+  manualPurchaseQuote?: ManualPurchaseQuote;
   submitting: boolean;
   feedback: { ok: boolean; text: string } | null;
   onChangeSide: (side: TradeSide) => void;
@@ -33,6 +37,7 @@ interface OrderEntryPanelProps {
   onChangeQuantity: (value: string) => void;
   onChangeTotal: (value: string) => void;
   onApplyPercentage: (pct: number) => void;
+  onSelectReceivingAddress?: (id: string) => void;
   onOpenPreview: () => void;
 }
 
@@ -59,6 +64,9 @@ export const OrderEntryPanel: React.FC<OrderEntryPanelProps> = ({
   availableBase,
   reservedBase,
   evaluation,
+  activeReceivingAddresses = [],
+  selectedReceivingAddressId = '',
+  manualPurchaseQuote,
   submitting,
   feedback,
   onChangeSide,
@@ -70,6 +78,7 @@ export const OrderEntryPanel: React.FC<OrderEntryPanelProps> = ({
   onChangeQuantity,
   onChangeTotal,
   onApplyPercentage,
+  onSelectReceivingAddress,
   onOpenPreview,
 }) => {
   const activeSideBalance = side === 'buy' ? availableUsdt : availableBase;
@@ -390,12 +399,60 @@ export const OrderEntryPanel: React.FC<OrderEntryPanelProps> = ({
         </div>
       </dl>
 
-      {/* Inline Validation Message */}
-      {evaluation.primaryValidationError && (
-        <p role="alert" data-testid="order-validation-alert" className="text-xs font-medium text-[#F0525E]">
-          {evaluation.primaryValidationError}
+      {/* Manual Purchase Payment Network Selector (BUY Market/Limit) */}
+      {side === 'buy' && orderType !== 'stop_limit' && (
+        <div
+          data-testid="manual-purchase-network-box"
+          className="rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#22242A] p-3 space-y-1.5"
+        >
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <label htmlFor="mpo-network-select" className="font-semibold text-[#111214] dark:text-[#F4F5F7]">
+              Payment Transfer Network
+            </label>
+            <span className="text-[#686D76] dark:text-[#7E828A]">Admin-Verified</span>
+          </div>
+          {activeReceivingAddresses.length === 0 ? (
+            <p className="text-[11px] text-[#D97706]">
+              No active receiving address configured by an administrator yet.
+            </p>
+          ) : (
+            <select
+              id="mpo-network-select"
+              data-testid="mpo-network-select"
+              value={selectedReceivingAddressId}
+              onChange={(e) => onSelectReceivingAddress?.(e.target.value)}
+              className="w-full h-9 px-2.5 rounded-md bg-white dark:bg-[#141518] border border-[#D4D7DF] dark:border-[#2B2C32] text-xs font-medium"
+            >
+              {activeReceivingAddresses.map((addr) => (
+                <option key={addr.id} value={addr.id}>
+                  {addr.assetSymbol} ({addr.networkCode}) · {addr.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {side === 'sell' && (
+        <p className="rounded-lg bg-[#F4F5F7] dark:bg-[#0B0C0E] border border-[#E2E4E9] dark:border-[#22242A] px-3 py-2 text-[11px] text-[#686D76] dark:text-[#9CA0A8]">
+          Manual order fulfilment supports BUY crypto purchases only. SELL execution requires Phase D liquidity routing.
         </p>
       )}
+
+      {/* Inline Validation Message */}
+      {side === 'buy' && orderType !== 'stop_limit' && manualPurchaseQuote
+        ? !manualPurchaseQuote.valid &&
+          manualPurchaseQuote.error &&
+          (quantityInput.trim() !== '' || totalInput.trim() !== '' || !isAuthenticated) && (
+            <p role="alert" data-testid="order-validation-alert" className="text-xs font-medium text-[#F0525E]">
+              {manualPurchaseQuote.error}
+            </p>
+          )
+        : evaluation.primaryValidationError && (
+            <p role="alert" data-testid="order-validation-alert" className="text-xs font-medium text-[#F0525E]">
+              {evaluation.primaryValidationError}
+            </p>
+          )}
 
       {/* Submission Result Feedback */}
       {feedback && (
@@ -412,13 +469,20 @@ export const OrderEntryPanel: React.FC<OrderEntryPanelProps> = ({
       <button
         type="button"
         data-testid="review-order-button"
-        disabled={!evaluation.canOpenPreview || submitting}
+        disabled={
+          submitting ||
+          (side === 'buy' && orderType !== 'stop_limit'
+            ? !evaluation.mathValid
+            : !evaluation.canOpenPreview)
+        }
         onClick={onOpenPreview}
         className={`w-full h-11 rounded-lg text-sm font-semibold text-white transition-opacity disabled:opacity-45 disabled:cursor-not-allowed ${
           side === 'buy' ? 'bg-[#10C478]' : 'bg-[#F0525E]'
         }`}
       >
-        Preview {orderTypeLabel} {sideActionLabel} ({activePair.baseAsset})
+        {side === 'buy' && orderType !== 'stop_limit'
+          ? `Review ${orderTypeLabel} Purchase (${activePair.baseAsset})`
+          : `Preview ${orderTypeLabel} ${sideActionLabel} (${activePair.baseAsset})`}
       </button>
 
       {!isAuthenticated && (

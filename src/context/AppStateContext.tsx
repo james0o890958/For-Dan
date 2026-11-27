@@ -7,12 +7,14 @@ import {
   INITIAL_KYC_SUBMISSIONS,
   INITIAL_LEDGER_ENTRIES,
   INITIAL_LEDGER_TRANSACTIONS,
+  INITIAL_MANUAL_PURCHASE_ORDERS,
   INITIAL_MARKET_PRICES,
   INITIAL_MARKET_SETTINGS,
   INITIAL_NETWORKS,
   INITIAL_NOTIFICATIONS,
   INITIAL_NOTIFICATION_CAMPAIGNS,
   INITIAL_PROFILES,
+  INITIAL_RECEIVING_ADDRESSES,
   INITIAL_RECONCILIATION_RUNS,
   INITIAL_SPOT_ORDERS,
   INITIAL_TRADES,
@@ -29,6 +31,7 @@ import {
   type SpotTradeInput,
   type WithdrawalRequestInput,
 } from '../services/platformService';
+import { exchangeApi } from '../services/exchangeApi';
 import {
   INITIAL_PROVIDER_HEALTH,
   unconfiguredCustodyProvider,
@@ -44,14 +47,18 @@ import type {
   KycSubmission,
   LedgerEntry,
   LedgerTransaction,
+  ManualPurchaseOrder,
+  ManualPurchaseVerificationChecklist,
   MarketDataStatus,
   MarketPrice,
   MarketSettings,
   NetworkConfig,
   NotificationCampaign,
+  NotificationCategory,
   NotificationItem,
   Profile,
   ProviderHealth,
+  ReceivingAddress,
   ReconciliationRun,
   SpotOrder,
   Trade,
@@ -67,6 +74,16 @@ import {
   previewWithdrawal,
   refundReservedWithdrawal,
 } from '../utils/exchangeEngine';
+import {
+  cancelManualPurchaseOrderRecord,
+  createManualPurchaseOrderRecord,
+  fulfilManualPurchaseOrderRecord,
+  reviewManualPurchaseOrderRecord,
+  submitManualPurchasePayment,
+  toggleReceivingAddressStatusRecord,
+  upsertReceivingAddressRecord,
+} from '../utils/manualPurchaseEngine';
+import { SANDBOX_REFERENCE_MARKETS } from '../utils/overviewModel';
 import {
   calculateSpotBuyPreview,
   calculateSpotSellPreview,
@@ -97,6 +114,10 @@ interface AppStateContextValue {
   currentRole: AppRole;
   isAdmin: boolean;
   authLoading: boolean;
+  backendMode: boolean;
+  backendSyncing: boolean;
+  backendSyncError: string | null;
+  refreshAccountData: () => Promise<void>;
   login: (identifier: string, password: string) => Promise<ActionResult & { role?: AppRole }>;
   register: (input: RegisterInput) => Promise<ActionResult>;
   logout: () => Promise<void>;
@@ -133,6 +154,9 @@ interface AppStateContextValue {
   notificationCampaigns: NotificationCampaign[];
   notifications: NotificationItem[];
   auditLogs: AdminAuditLog[];
+  receivingAddresses: ReceivingAddress[];
+  activeReceivingAddresses: ReceivingAddress[];
+  manualPurchaseOrders: ManualPurchaseOrder[];
 
   // Derived for current user
   currentUserBalances: WalletBalance[];
@@ -141,6 +165,7 @@ interface AppStateContextValue {
   currentUserDeposits: DepositRecord[];
   currentUserWithdrawals: WithdrawalRequest[];
   currentUserOrders: SpotOrder[];
+  currentUserManualPurchaseOrders: ManualPurchaseOrder[];
   currentUserTrades: Trade[];
   currentUserTransactions: LedgerTransaction[];
   currentUserNotifications: NotificationItem[];
@@ -156,18 +181,58 @@ interface AppStateContextValue {
     documentNumber: string;
   }) => ActionResult;
   requestDepositAddress: (payload: { assetSymbol: string; networkCode: string }) => Promise<ActionResult>;
-  submitDeposit: (payload: { assetSymbol: string; networkCode: string; amount: number; txHash: string }) => ActionResult;
+  submitDeposit: (payload: { assetSymbol: string; networkCode: string; amount: number; txHash: string }) => Promise<ActionResult>;
   requestWithdrawal: (input: WithdrawalRequestInput) => ActionResult;
   cancelWithdrawal: (withdrawalId: string) => ActionResult;
   submitSpotOrder: (input: SpotTradeInput) => Promise<ActionResult>;
+  createManualPurchaseOrder: (input: {
+    pairSymbol: string;
+    orderType: 'MARKET' | 'LIMIT';
+    requestedQuoteAmount: number;
+    limitPrice?: number | null;
+    receivingAddressId: string;
+  }) => Promise<ActionResult & { order?: ManualPurchaseOrder }>;
+  submitManualPurchasePaymentDetails: (input: {
+    orderId: string;
+    paymentTxHash: string;
+    actualAmountSent: number;
+    paymentNote?: string;
+  }) => Promise<ActionResult & { order?: ManualPurchaseOrder }>;
+  cancelManualPurchaseOrder: (orderId: string, reason?: string) => Promise<ActionResult>;
   markNotificationRead: (notificationId: string) => void;
   markAllNotificationsRead: () => void;
 
   // Admin actions
   toggleCustomerAccountStatus: (customerUserId: string, nextStatus: AccountStatus, reason: string) => ActionResult;
   reviewKyc: (submissionId: string, decision: 'approved' | 'rejected', rejectionReason?: string) => ActionResult;
-  reviewDeposit: (depositId: string, decision: 'approved' | 'rejected', adminNote: string) => ActionResult;
-  assignDepositAddress: (payload: { userId: string; assetSymbol: string; networkCode: string; address: string; memoOrTag?: string }) => ActionResult;
+  confirmDepositFinality: (depositId: string, confirmations?: number) => Promise<ActionResult>;
+  reviewDeposit: (depositId: string, decision: 'approved' | 'rejected', adminNote: string) => Promise<ActionResult>;
+  assignDepositAddress: (payload: { userId: string; assetSymbol: string; networkCode: string; address: string; memoOrTag?: string }) => Promise<ActionResult>;
+  saveReceivingAddress: (payload: {
+    id?: string;
+    assetSymbol: string;
+    networkCode: string;
+    address: string;
+    memoOrTag?: string;
+    label?: string;
+    isActive?: boolean;
+  }) => Promise<ActionResult & { receivingAddress?: ReceivingAddress }>;
+  toggleReceivingAddressStatus: (addressId: string, isActive: boolean, note?: string) => Promise<ActionResult>;
+  reviewManualPurchaseOrder: (input: {
+    orderId: string;
+    targetStatus: 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED';
+    checklist?: Partial<ManualPurchaseVerificationChecklist>;
+    adminRemark?: string;
+    rejectionReason?: string;
+    expectedVersion?: number;
+  }) => Promise<ActionResult & { order?: ManualPurchaseOrder }>;
+  fulfilManualPurchaseOrder: (input: {
+    orderId: string;
+    finalCryptoAmount?: number;
+    finalFeeUsdt?: number;
+    adminRemark?: string;
+    expectedVersion?: number;
+  }) => Promise<ActionResult & { order?: ManualPurchaseOrder }>;
   reviewWithdrawal: (withdrawalId: string, decision: 'approved' | 'rejected', note: string) => ActionResult;
   dispatchApprovedWithdrawal: (withdrawalId: string) => Promise<ActionResult>;
   finalizeWithdrawalRecord: (withdrawalId: string) => ActionResult;
@@ -209,6 +274,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [backendMode, setBackendMode] = useState<boolean>(false);
+  const [backendSyncing, setBackendSyncing] = useState<boolean>(false);
+  const [backendSyncError, setBackendSyncError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>(INITIAL_PROFILES);
   const [userRoles, setUserRoles] = useState<UserRoleRecord[]>(INITIAL_USER_ROLES);
   const [assets, setAssets] = useState<Asset[]>(INITIAL_ASSETS);
@@ -246,6 +314,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   );
   const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
   const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>(INITIAL_AUDIT_LOGS);
+  const [receivingAddresses, setReceivingAddresses] = useState<ReceivingAddress[]>(
+    INITIAL_RECEIVING_ADDRESSES
+  );
+  const [manualPurchaseOrders, setManualPurchaseOrders] = useState<ManualPurchaseOrder[]>(
+    INITIAL_MANUAL_PURCHASE_ORDERS
+  );
 
   useEffect(() => {
     const root = document.documentElement;
@@ -347,42 +421,166 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setAuditLogs((prev) => [entry, ...prev]);
   };
 
+  const refreshAccountData = async () => {
+    if (!currentUserId || !backendMode) return;
+    setBackendSyncing(true);
+    setBackendSyncError(null);
+    const adminSession = currentRole !== 'customer';
+
+    try {
+      if (adminSession) {
+        const [
+          summaryRes,
+          customersRes,
+          ledgerRes,
+          depositsRes,
+          depAddrRes,
+          recAddrRes,
+          ordersRes,
+        ] = await Promise.all([
+          exchangeApi.fetchWalletSummary(),
+          exchangeApi.fetchAdminCustomers(),
+          exchangeApi.fetchAdminLedger(),
+          exchangeApi.fetchAdminDeposits(),
+          exchangeApi.fetchAdminDepositAddresses(),
+          exchangeApi.fetchAdminReceivingAddresses(),
+          exchangeApi.fetchAdminPurchaseOrders(),
+        ]);
+
+        if (summaryRes.ok && summaryRes.data) {
+          if (summaryRes.data.assets.length > 0) setAssets(summaryRes.data.assets);
+          if (summaryRes.data.networks.length > 0) setNetworks(summaryRes.data.networks);
+          if (summaryRes.data.tradingPairs.length > 0) setTradingPairs(summaryRes.data.tradingPairs);
+          setNotifications(summaryRes.data.notifications);
+        }
+        if (customersRes.ok && customersRes.data) {
+          setProfiles(customersRes.data.profiles);
+          setUserRoles(customersRes.data.userRoles);
+        }
+        if (ledgerRes.ok && ledgerRes.data) {
+          setWalletBalances(ledgerRes.data.walletBalances);
+          setLedgerTransactions(ledgerRes.data.ledgerTransactions);
+          setLedgerEntries(ledgerRes.data.ledgerEntries);
+          setAuditLogs(ledgerRes.data.auditLogs);
+        }
+        if (depositsRes.ok && depositsRes.data) {
+          setDeposits(depositsRes.data);
+        }
+        if (depAddrRes.ok && depAddrRes.data) {
+          setDepositAddresses(depAddrRes.data);
+        }
+        if (recAddrRes.ok && recAddrRes.data) {
+          setReceivingAddresses(recAddrRes.data);
+        }
+        if (ordersRes.ok && ordersRes.data) {
+          setManualPurchaseOrders(ordersRes.data);
+        }
+
+        const firstFailure = [
+          summaryRes,
+          customersRes,
+          ledgerRes,
+          depositsRes,
+          depAddrRes,
+          recAddrRes,
+          ordersRes,
+        ].find((r) => !r.ok);
+        if (firstFailure) {
+          setBackendSyncError(firstFailure.message);
+        }
+      } else {
+        const [summaryRes, txRes, depositsRes, recAddrRes, ordersRes] = await Promise.all([
+          exchangeApi.fetchWalletSummary(),
+          exchangeApi.fetchTransactions(),
+          exchangeApi.fetchCustomerDeposits(),
+          exchangeApi.fetchCustomerReceivingAddresses(),
+          exchangeApi.fetchCustomerPurchaseOrders(),
+        ]);
+
+        if (summaryRes.ok && summaryRes.data) {
+          const d = summaryRes.data;
+          setProfiles([d.profile]);
+          setUserRoles([
+            {
+              id: `role-${d.profile.id}`,
+              userId: d.profile.id,
+              role: d.role,
+              assignedBy: 'database',
+              createdAt: d.profile.createdAt,
+            },
+          ]);
+          setWalletBalances(d.balances);
+          setDepositAddresses(d.depositAddresses);
+          if (d.assets.length > 0) setAssets(d.assets);
+          if (d.networks.length > 0) setNetworks(d.networks);
+          if (d.tradingPairs.length > 0) setTradingPairs(d.tradingPairs);
+          setNotifications(d.notifications);
+        }
+        if (txRes.ok && txRes.data) {
+          setLedgerTransactions(txRes.data.transactions);
+          setLedgerEntries(txRes.data.entries);
+        }
+        if (depositsRes.ok && depositsRes.data) {
+          setDeposits(depositsRes.data);
+        }
+        if (recAddrRes.ok && recAddrRes.data) {
+          setReceivingAddresses(recAddrRes.data);
+        }
+        if (ordersRes.ok && ordersRes.data) {
+          setManualPurchaseOrders(ordersRes.data);
+        }
+
+        const firstFailure = [summaryRes, txRes, depositsRes, recAddrRes, ordersRes].find(
+          (r) => !r.ok
+        );
+        if (firstFailure) {
+          setBackendSyncError(firstFailure.message);
+        }
+      }
+    } finally {
+      setBackendSyncing(false);
+    }
+  };
+
   const hydrateAuthenticatedSnapshot = (snapshot: {
     profile: Profile;
     role: AppRole;
     balances?: WalletBalance[];
   }) => {
-    setProfiles((prev) => {
-      const exists = prev.some((p) => p.id === snapshot.profile.id);
-      return exists
-        ? prev.map((p) => (p.id === snapshot.profile.id ? snapshot.profile : p))
-        : [snapshot.profile, ...prev];
-    });
-
-    setUserRoles((prev) => {
-      const filtered = prev.filter((r) => r.userId !== snapshot.profile.id);
-      return [
-        ...filtered,
-        {
-          id: `role-${snapshot.profile.id}`,
-          userId: snapshot.profile.id,
-          role: snapshot.role,
-          assignedBy: 'database',
-          createdAt: snapshot.profile.createdAt,
-        },
-      ];
-    });
-
-    if (Array.isArray(snapshot.balances)) {
-      setWalletBalances((prev) => {
-        const others = prev.filter((b) => b.userId !== snapshot.profile.id);
-        return [...others, ...snapshot.balances!];
-      });
-    }
+    setBackendMode(true);
+    setBackendSyncError(null);
+    setProfiles([snapshot.profile]);
+    setUserRoles([
+      {
+        id: `role-${snapshot.profile.id}`,
+        userId: snapshot.profile.id,
+        role: snapshot.role,
+        assignedBy: 'database',
+        createdAt: snapshot.profile.createdAt,
+      },
+    ]);
+    setWalletBalances(Array.isArray(snapshot.balances) ? snapshot.balances : []);
+    setDepositAddresses([]);
+    setDeposits([]);
+    setWithdrawals([]);
+    setKycSubmissions([]);
+    setSpotOrders([]);
+    setLedgerTransactions([]);
+    setLedgerEntries([]);
+    setNotifications([]);
+    setAuditLogs([]);
+    setReceivingAddresses([]);
+    setManualPurchaseOrders([]);
 
     setCurrentUserId(snapshot.profile.id);
     setLanguageState(snapshot.profile.preferredLanguage);
   };
+
+  useEffect(() => {
+    if (!backendMode || !currentUserId) return;
+    void refreshAccountData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backendMode, currentUserId, currentRole]);
 
   useEffect(() => {
     let active = true;
@@ -602,6 +800,25 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // Clear local session state regardless of network status
     }
     setCurrentUserId(null);
+    setBackendMode(false);
+    setBackendSyncError(null);
+    setProfiles(INITIAL_PROFILES);
+    setUserRoles(INITIAL_USER_ROLES);
+    setAssets(INITIAL_ASSETS);
+    setNetworks(INITIAL_NETWORKS);
+    setTradingPairs(INITIAL_TRADING_PAIRS);
+    setWalletBalances(INITIAL_WALLET_BALANCES);
+    setDepositAddresses(INITIAL_DEPOSIT_ADDRESSES);
+    setDeposits(INITIAL_DEPOSITS);
+    setWithdrawals(INITIAL_WITHDRAWALS);
+    setKycSubmissions(INITIAL_KYC_SUBMISSIONS);
+    setSpotOrders(INITIAL_SPOT_ORDERS);
+    setLedgerTransactions(INITIAL_LEDGER_TRANSACTIONS);
+    setLedgerEntries(INITIAL_LEDGER_ENTRIES);
+    setNotifications(INITIAL_NOTIFICATIONS);
+    setAuditLogs(INITIAL_AUDIT_LOGS);
+    setReceivingAddresses(INITIAL_RECEIVING_ADDRESSES);
+    setManualPurchaseOrders(INITIAL_MANUAL_PURCHASE_ORDERS);
   };
 
   const recoverPassword = async (identifier: string): Promise<ActionResult> => {
@@ -698,6 +915,19 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         .filter((o) => o.userId === currentUserId)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [spotOrders, currentUserId]
+  );
+
+  const activeReceivingAddresses = useMemo(
+    () => receivingAddresses.filter((r) => r.isActive),
+    [receivingAddresses]
+  );
+
+  const currentUserManualPurchaseOrders = useMemo(
+    () =>
+      manualPurchaseOrders
+        .filter((o) => o.userId === currentUserId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [manualPurchaseOrders, currentUserId]
   );
 
   const currentUserTrades = useMemo(
@@ -832,6 +1062,14 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return { ok: true, message: 'Deposit address ready.' };
     }
 
+    if (backendMode) {
+      await refreshAccountData();
+      return {
+        ok: false,
+        message: `No ${payload.assetSymbol} (${payload.networkCode}) custody deposit address is assigned to your account yet. An administrator must assign one before submitting a deposit.`,
+      };
+    }
+
     const res = await unconfiguredCustodyProvider.getOrCreateDepositAddress({
       userId: currentProfile.id,
       assetSymbol: payload.assetSymbol,
@@ -840,18 +1078,46 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return { ok: res.ok, message: res.message };
   };
 
-  const submitDeposit = (payload: {
+  const submitDeposit = async (payload: {
     assetSymbol: string;
     networkCode: string;
     amount: number;
     txHash: string;
-  }): ActionResult => {
+  }): Promise<ActionResult> => {
     if (!currentProfile) return { ok: false, message: 'Please sign in first.' };
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.submitDeposit(payload);
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      setDeposits((prev) => [apiRes.data!, ...prev.filter((d) => d.id !== apiRes.data!.id)]);
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: 'Deposit submitted successfully and queued for admin verification.',
+      };
+    }
+
+    if (currentProfile.accountStatus !== 'active') {
+      return { ok: false, message: `Account is ${currentProfile.accountStatus}. Deposits are disabled.` };
+    }
     if (currentProfile.kycStatus !== 'approved') {
       return { ok: false, message: 'Approved KYC verification is required before submitting deposits.' };
     }
+    const net = networks.find(
+      (n) =>
+        n.assetSymbol.toUpperCase() === payload.assetSymbol.toUpperCase() &&
+        n.code.toUpperCase() === payload.networkCode.toUpperCase()
+    );
+    if (net && !net.isDepositEnabled) {
+      return { ok: false, message: `Deposits on ${payload.networkCode} are currently disabled.` };
+    }
     const assigned = depositAddresses.find(
-      (d) => d.userId === currentProfile.id && d.assetSymbol === payload.assetSymbol && d.networkCode === payload.networkCode
+      (d) =>
+        d.userId === currentProfile.id &&
+        d.assetSymbol === payload.assetSymbol &&
+        d.networkCode === payload.networkCode
     );
     if (!assigned) {
       return { ok: false, message: 'No deposit address assigned for this asset and network. Please request an address first.' };
@@ -861,17 +1127,27 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return { ok: false, message: 'Please enter a valid deposit amount greater than zero.' };
     }
     const tx = payload.txHash.trim();
-    if (!tx) {
-      return { ok: false, message: 'Transaction hash / reference is required.' };
+    if (!tx || tx.length < 10 || /\s/.test(tx)) {
+      return { ok: false, message: 'A valid transaction hash / reference (min 10 chars, no spaces) is required.' };
     }
-    const duplicateTx = deposits.some(
-      (d) => d.txHash.toLowerCase() === tx.toLowerCase() && d.assetSymbol === payload.assetSymbol
+    const normalizedTx = tx.toLowerCase();
+    const normalizedNet = payload.networkCode.trim().toUpperCase();
+    const duplicateDeposit = deposits.some(
+      (d) =>
+        d.networkCode.trim().toUpperCase() === normalizedNet &&
+        d.txHash.trim().toLowerCase() === normalizedTx
     );
-    if (duplicateTx) {
-      return { ok: false, message: 'Duplicate transaction hash detected. This transaction has already been recorded.' };
+    const duplicatePurchaseOrder = manualPurchaseOrders.some(
+      (o) =>
+        o.receivingNetwork.trim().toUpperCase() === normalizedNet &&
+        (o.paymentTxHash?.trim().toLowerCase() ?? '') === normalizedTx &&
+        o.status !== 'REJECTED' &&
+        o.status !== 'CANCELLED'
+    );
+    if (duplicateDeposit || duplicatePurchaseOrder) {
+      return { ok: false, message: 'Duplicate transaction hash detected on this network. This transaction has already been recorded.' };
     }
 
-    const net = networks.find((n) => n.assetSymbol === payload.assetSymbol && n.code === payload.networkCode);
     const minDep = net?.minDeposit ?? 10;
     if (amt < minDep) {
       return { ok: false, message: `Amount is below the minimum deposit requirement of ${minDep} ${payload.assetSymbol}.` };
@@ -909,25 +1185,76 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return { ok: true, message: 'Deposit submitted successfully and queued for admin verification.' };
   };
 
-  const assignDepositAddress = (payload: {
+  const assignDepositAddress = async (payload: {
     userId: string;
     assetSymbol: string;
     networkCode: string;
     address: string;
     memoOrTag?: string;
-  }): ActionResult => {
+  }): Promise<ActionResult> => {
     if (!currentProfile || !isAdmin) {
       return { ok: false, message: 'Unauthorized. Admin role required to assign deposit addresses.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.assignDepositAddress(payload);
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      const saved = apiRes.data;
+      setDepositAddresses((prev) => [
+        saved,
+        ...prev.filter(
+          (d) =>
+            !(
+              d.userId === saved.userId &&
+              d.assetSymbol === saved.assetSymbol &&
+              d.networkCode === saved.networkCode
+            )
+        ),
+      ]);
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Successfully assigned ${saved.assetSymbol} (${saved.networkCode}) address to customer.`,
+      };
+    }
+
+    const targetCustomer = profiles.find((p) => p.id === payload.userId);
+    if (!targetCustomer) {
+      return { ok: false, message: 'Customer profile not found.' };
+    }
+    if (targetCustomer.accountStatus !== 'active') {
+      return { ok: false, message: `Cannot assign deposit address to ${targetCustomer.accountStatus} customer account.` };
     }
     const trimmed = payload.address.trim();
     if (!trimmed) {
       return { ok: false, message: 'Deposit address cannot be empty.' };
     }
+    const normalizedAsset = payload.assetSymbol.toUpperCase();
+    const net = networks.find(
+      (n) =>
+        n.assetSymbol.toUpperCase() === normalizedAsset &&
+        n.code.toUpperCase() === payload.networkCode.trim().toUpperCase()
+    );
+    if (net) {
+      try {
+        const regex = new RegExp(net.addressPattern);
+        if (!regex.test(trimmed)) {
+          return { ok: false, message: `Address format does not match ${net.code} network validation rules.` };
+        }
+      } catch {
+        // Ignore malformed pattern
+      }
+      if (net.memoRequired && !payload.memoOrTag?.trim()) {
+        return { ok: false, message: `Destination tag/memo is required for ${net.code}.` };
+      }
+    }
     const newAddr: DepositAddress = {
       id: `addr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       userId: payload.userId,
-      assetSymbol: payload.assetSymbol.toUpperCase(),
-      networkCode: payload.networkCode,
+      assetSymbol: normalizedAsset,
+      networkCode: net?.code ?? payload.networkCode,
       custodyVaultId: 'vault-manual-admin',
       address: trimmed,
       memoOrTag: payload.memoOrTag?.trim() || null,
@@ -1181,6 +1508,562 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return { ok: true, message: 'Order submitted to liquidity venue.' };
   };
 
+  const pushSystemNotification = (
+    userId: string,
+    title: string,
+    message: string,
+    category: NotificationCategory = 'Trade'
+  ) => {
+    const now = new Date().toISOString();
+    const item: NotificationItem = {
+      id: exchangeService.generateId('notif'),
+      campaignId: 'system-manual-purchase',
+      userId,
+      title,
+      message,
+      category,
+      isRead: false,
+      readAt: null,
+      createdAt: now,
+    };
+    setNotifications((prev) => [item, ...prev]);
+  };
+
+  const createManualPurchaseOrder = async (input: {
+    pairSymbol: string;
+    orderType: 'MARKET' | 'LIMIT';
+    requestedQuoteAmount: number;
+    limitPrice?: number | null;
+    receivingAddressId: string;
+  }): Promise<ActionResult & { order?: ManualPurchaseOrder }> => {
+    if (!currentProfile) {
+      return { ok: false, message: 'Please sign in with an approved KYC account first.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.createPurchaseOrder(input);
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      const created = apiRes.data;
+      setManualPurchaseOrders((prev) => [created, ...prev.filter((o) => o.id !== created.id)]);
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Purchase order ${created.orderRef} created. Follow the payment instructions to submit your transaction reference.`,
+        order: created,
+      };
+    }
+
+    const pair = tradingPairs.find((p) => p.symbol === input.pairSymbol);
+    const baseAsset = pair ? assets.find((a) => a.symbol === pair.baseAsset) : undefined;
+    const quoteAsset = pair ? assets.find((a) => a.symbol === pair.quoteAsset) : undefined;
+    const market = pair ? marketPrices.find((m) => m.symbol === pair.symbol) : undefined;
+    const refFallback = pair ? SANDBOX_REFERENCE_MARKETS[pair.symbol]?.price ?? 0 : 0;
+    const referenceMarketPrice =
+      market && market.price > 0 ? market.price : refFallback;
+
+    const selectedAddr = receivingAddresses.find((r) => r.id === input.receivingAddressId);
+    const networkConfig = selectedAddr
+      ? networks.find(
+          (n) =>
+            n.assetSymbol === selectedAddr.assetSymbol &&
+            n.code === selectedAddr.networkCode
+        )
+      : undefined;
+
+    const now = new Date().toISOString();
+    const id = exchangeService.generateId('mpo');
+    const orderRef = `MPO-${now.slice(0, 10).replace(/-/g, '')}-${id.slice(-6).toUpperCase()}`;
+
+    const res = createManualPurchaseOrderRecord({
+      id,
+      orderRef,
+      eventId: exchangeService.generateId('mpe'),
+      userId: currentProfile.id,
+      actorLabel: currentProfile.fullName,
+      side: 'buy',
+      orderType: input.orderType,
+      pair,
+      baseAsset,
+      quoteAsset,
+      requestedQuoteAmount: input.requestedQuoteAmount,
+      limitPrice: input.limitPrice,
+      referenceMarketPrice,
+      accountStatus: currentProfile.accountStatus,
+      kycStatus: currentProfile.kycStatus,
+      receivingAddress: selectedAddr,
+      networkConfig,
+      nowIso: now,
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Unable to create purchase order.' };
+    }
+
+    setManualPurchaseOrders((prev) => [res.data!, ...prev]);
+    pushSystemNotification(
+      currentProfile.id,
+      `Purchase Request Created (${res.data.orderRef})`,
+      `Send ${res.data.totalPaymentAmount} ${res.data.paymentAsset} on ${res.data.receivingNetwork} to complete your ${res.data.pairSymbol} manual buy order.`,
+      'Trade'
+    );
+
+    return {
+      ok: true,
+      message: `Purchase order ${res.data.orderRef} created. Follow the payment instructions to submit your transaction reference.`,
+      order: res.data,
+    };
+  };
+
+  const submitManualPurchasePaymentDetails = async (input: {
+    orderId: string;
+    paymentTxHash: string;
+    actualAmountSent: number;
+    paymentNote?: string;
+  }): Promise<ActionResult & { order?: ManualPurchaseOrder }> => {
+    if (!currentProfile) {
+      return { ok: false, message: 'Authentication required.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.submitPurchasePayment(input.orderId, {
+        paymentTxHash: input.paymentTxHash,
+        actualAmountSent: input.actualAmountSent,
+        paymentNote: input.paymentNote,
+      });
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      const updated = apiRes.data;
+      setManualPurchaseOrders((prev) =>
+        prev.map((o) => (o.id === updated.id ? updated : o))
+      );
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Payment details submitted for ${updated.orderRef}. Order status is now ${updated.status}.`,
+        order: updated,
+      };
+    }
+
+    const target = manualPurchaseOrders.find((o) => o.id === input.orderId);
+    if (!target || target.userId !== currentProfile.id) {
+      return { ok: false, message: 'Purchase order not found.' };
+    }
+
+    const res = submitManualPurchasePayment({
+      order: target,
+      actorUserId: currentProfile.id,
+      actorLabel: currentProfile.fullName,
+      actorAccountStatus: currentProfile.accountStatus,
+      paymentTxHash: input.paymentTxHash,
+      actualAmountSent: input.actualAmountSent,
+      paymentNote: input.paymentNote,
+      existingOrders: manualPurchaseOrders,
+      existingDeposits: deposits,
+      eventId: exchangeService.generateId('mpe'),
+      nowIso: new Date().toISOString(),
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Unable to submit payment details.' };
+    }
+
+    setManualPurchaseOrders((prev) =>
+      prev.map((o) => (o.id === target.id ? res.data! : o))
+    );
+    pushSystemNotification(
+      currentProfile.id,
+      `Payment Submitted (${res.data.orderRef})`,
+      `Transaction reference recorded for ${res.data.pairSymbol}. An administrator will independently verify your payment.`,
+      'Trade'
+    );
+
+    return {
+      ok: true,
+      message: `Payment details submitted for ${res.data.orderRef}. Order status is now PAYMENT_SUBMITTED.`,
+      order: res.data,
+    };
+  };
+
+  const cancelManualPurchaseOrder = async (
+    orderId: string,
+    reason?: string
+  ): Promise<ActionResult> => {
+    if (!currentProfile) return { ok: false, message: 'Authentication required.' };
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.cancelPurchaseOrder(orderId, reason);
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      const cancelled = apiRes.data;
+      setManualPurchaseOrders((prev) =>
+        prev.map((o) => (o.id === cancelled.id ? cancelled : o))
+      );
+      await refreshAccountData();
+      return { ok: true, message: `Order ${cancelled.orderRef} cancelled.` };
+    }
+
+    const target = manualPurchaseOrders.find((o) => o.id === orderId);
+    if (!target || target.userId !== currentProfile.id) {
+      return { ok: false, message: 'Purchase order not found.' };
+    }
+
+    const res = cancelManualPurchaseOrderRecord({
+      order: target,
+      actorUserId: currentProfile.id,
+      actorLabel: currentProfile.fullName,
+      reason,
+      eventId: exchangeService.generateId('mpe'),
+      nowIso: new Date().toISOString(),
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Unable to cancel purchase order.' };
+    }
+
+    setManualPurchaseOrders((prev) =>
+      prev.map((o) => (o.id === target.id ? res.data! : o))
+    );
+    pushSystemNotification(
+      currentProfile.id,
+      `Order Cancelled (${res.data.orderRef})`,
+      `Your manual crypto purchase order ${res.data.orderRef} has been cancelled.`,
+      'Trade'
+    );
+
+    return { ok: true, message: `Order ${res.data.orderRef} cancelled.` };
+  };
+
+  const saveReceivingAddress = async (payload: {
+    id?: string;
+    assetSymbol: string;
+    networkCode: string;
+    address: string;
+    memoOrTag?: string;
+    label?: string;
+    isActive?: boolean;
+  }): Promise<ActionResult & { receivingAddress?: ReceivingAddress }> => {
+    if (!currentProfile || !isAdmin) {
+      return { ok: false, message: 'Administrator permission required.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.saveReceivingAddress(payload);
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      const saved = apiRes.data;
+      setReceivingAddresses((prev) => {
+        const exists = prev.some((a) => a.id === saved.id);
+        return exists ? prev.map((a) => (a.id === saved.id ? saved : a)) : [saved, ...prev];
+      });
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Receiving address saved for ${saved.assetSymbol} (${saved.networkCode}).`,
+        receivingAddress: saved,
+      };
+    }
+
+    const net = networks.find(
+      (n) =>
+        n.assetSymbol === payload.assetSymbol.trim().toUpperCase() &&
+        n.code === payload.networkCode.trim().toUpperCase()
+    );
+    const id = payload.id?.trim() || exchangeService.generateId('recv');
+    const res = upsertReceivingAddressRecord({
+      id,
+      assetSymbol: payload.assetSymbol,
+      networkCode: payload.networkCode,
+      address: payload.address,
+      memoOrTag: payload.memoOrTag,
+      label: payload.label,
+      isActive: payload.isActive,
+      adminUserId: currentProfile.id,
+      adminLabel: currentProfile.fullName,
+      adminRole: currentRole,
+      existingAddresses: receivingAddresses,
+      networkConfig: net,
+      nowIso: new Date().toISOString(),
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Unable to save receiving address.' };
+    }
+
+    const exists = receivingAddresses.some((a) => a.id === res.data!.id);
+    setReceivingAddresses((prev) =>
+      exists
+        ? prev.map((a) => (a.id === res.data!.id ? res.data! : a))
+        : [res.data!, ...prev]
+    );
+    appendAudit({
+      action: exists ? 'RECEIVING_ADDRESS_UPDATED' : 'RECEIVING_ADDRESS_CREATED',
+      affectedUserId: null,
+      recordType: 'receiving_addresses',
+      recordId: res.data.id,
+      details: `${exists ? 'Updated' : 'Registered'} receiving address for ${res.data.assetSymbol} (${res.data.networkCode}): ${res.data.address}`,
+    });
+
+    return {
+      ok: true,
+      message: `Receiving address saved for ${res.data.assetSymbol} (${res.data.networkCode}).`,
+      receivingAddress: res.data,
+    };
+  };
+
+  const toggleReceivingAddressStatus = async (
+    addressId: string,
+    isActive: boolean,
+    note?: string
+  ): Promise<ActionResult> => {
+    if (!currentProfile || !isAdmin) {
+      return { ok: false, message: 'Administrator permission required.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.toggleReceivingAddressStatus(addressId, isActive, note);
+      if (!apiRes.ok || !apiRes.data) {
+        return { ok: false, message: apiRes.message };
+      }
+      const updated = apiRes.data;
+      setReceivingAddresses((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Receiving address marked ${updated.isActive ? 'active' : 'disabled'}. Existing submitted orders retain their snapshot.`,
+      };
+    }
+
+    const target = receivingAddresses.find((a) => a.id === addressId);
+    if (!target) return { ok: false, message: 'Receiving address not found.' };
+
+    const res = toggleReceivingAddressStatusRecord({
+      addressRecord: target,
+      nextIsActive: isActive,
+      adminUserId: currentProfile.id,
+      adminLabel: currentProfile.fullName,
+      adminRole: currentRole,
+      note,
+      nowIso: new Date().toISOString(),
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Unable to update address status.' };
+    }
+
+    setReceivingAddresses((prev) =>
+      prev.map((a) => (a.id === addressId ? res.data! : a))
+    );
+    appendAudit({
+      action: isActive ? 'RECEIVING_ADDRESS_ACTIVATED' : 'RECEIVING_ADDRESS_DISABLED',
+      affectedUserId: null,
+      recordType: 'receiving_addresses',
+      recordId: addressId,
+      details: `${isActive ? 'Activated' : 'Disabled'} ${target.assetSymbol} (${target.networkCode}) receiving address ${target.address}.`,
+    });
+
+    return {
+      ok: true,
+      message: `Receiving address marked ${isActive ? 'active' : 'disabled'}. Existing submitted orders retain their snapshot.`,
+    };
+  };
+
+  const reviewManualPurchaseOrder = async (input: {
+    orderId: string;
+    targetStatus: 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED';
+    checklist?: Partial<ManualPurchaseVerificationChecklist>;
+    adminRemark?: string;
+    rejectionReason?: string;
+    expectedVersion?: number;
+  }): Promise<ActionResult & { order?: ManualPurchaseOrder }> => {
+    if (!currentProfile || !isAdmin) {
+      return { ok: false, message: 'Administrator permission required.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.reviewManualPurchaseOrder(input.orderId, {
+        targetStatus: input.targetStatus,
+        checklist: input.checklist,
+        adminRemark: input.adminRemark,
+        rejectionReason: input.rejectionReason,
+        expectedVersion: input.expectedVersion,
+      });
+      if (!apiRes.ok || !apiRes.data) {
+        await refreshAccountData();
+        return { ok: false, message: apiRes.message };
+      }
+      const updated = apiRes.data;
+      setManualPurchaseOrders((prev) =>
+        prev.map((o) => (o.id === updated.id ? updated : o))
+      );
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Order ${updated.orderRef} updated to ${updated.status}.`,
+        order: updated,
+      };
+    }
+
+    const target = manualPurchaseOrders.find((o) => o.id === input.orderId);
+    if (!target) return { ok: false, message: 'Manual purchase order not found.' };
+
+    const res = reviewManualPurchaseOrderRecord({
+      order: target,
+      adminUserId: currentProfile.id,
+      adminLabel: currentProfile.fullName,
+      adminRole: currentRole,
+      targetStatus: input.targetStatus,
+      checklist: input.checklist,
+      adminRemark: input.adminRemark,
+      rejectionReason: input.rejectionReason,
+      expectedVersion: input.expectedVersion,
+      existingOrders: manualPurchaseOrders,
+      existingDeposits: deposits,
+      eventId: exchangeService.generateId('mpe'),
+      nowIso: new Date().toISOString(),
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Order review failed.' };
+    }
+
+    setManualPurchaseOrders((prev) =>
+      prev.map((o) => (o.id === target.id ? res.data! : o))
+    );
+
+    const actionMap = {
+      UNDER_REVIEW: 'MANUAL_PURCHASE_UNDER_REVIEW',
+      APPROVED: 'MANUAL_PURCHASE_APPROVED',
+      REJECTED: 'MANUAL_PURCHASE_REJECTED',
+    } as const;
+    const titleMap = {
+      UNDER_REVIEW: `Order Under Review (${res.data.orderRef})`,
+      APPROVED: `Order Approved for Fulfilment (${res.data.orderRef})`,
+      REJECTED: `Purchase Order Rejected (${res.data.orderRef})`,
+    };
+    const msgMap = {
+      UNDER_REVIEW: `Your ${res.data.pairSymbol} payment proof is currently under verification review.`,
+      APPROVED: `Your payment for ${res.data.orderRef} passed verification and is awaiting final wallet credit.`,
+      REJECTED: `Your purchase order ${res.data.orderRef} was rejected. Reason: ${res.data.rejectionReason}`,
+    };
+
+    appendAudit({
+      action: actionMap[input.targetStatus],
+      affectedUserId: target.userId,
+      recordType: 'manual_purchase_orders',
+      recordId: target.id,
+      details: `${input.targetStatus} order ${res.data.orderRef} (${res.data.pairSymbol}). ${res.data.rejectionReason || res.data.adminRemark || ''}`,
+    });
+    pushSystemNotification(
+      target.userId,
+      titleMap[input.targetStatus],
+      msgMap[input.targetStatus],
+      'Trade'
+    );
+
+    return {
+      ok: true,
+      message: `Order ${res.data.orderRef} updated to ${res.data.status}.`,
+      order: res.data,
+    };
+  };
+
+  const fulfilManualPurchaseOrder = async (input: {
+    orderId: string;
+    finalCryptoAmount?: number;
+    finalFeeUsdt?: number;
+    adminRemark?: string;
+    expectedVersion?: number;
+  }): Promise<ActionResult & { order?: ManualPurchaseOrder }> => {
+    if (!currentProfile || !isAdmin) {
+      return { ok: false, message: 'Administrator permission required.' };
+    }
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.fulfilManualPurchaseOrder(input.orderId, {
+        finalCryptoAmount: input.finalCryptoAmount,
+        finalFeeUsdt: input.finalFeeUsdt,
+        adminRemark: input.adminRemark,
+        expectedVersion: input.expectedVersion,
+      });
+      if (!apiRes.ok || !apiRes.data) {
+        await refreshAccountData();
+        return { ok: false, message: apiRes.message };
+      }
+      const updated = apiRes.data;
+      setManualPurchaseOrders((prev) =>
+        prev.map((o) => (o.id === updated.id ? updated : o))
+      );
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Order ${updated.orderRef} fulfilled. Credited ${updated.finalCryptoAmount} ${updated.baseAsset} via ledger transaction ${updated.creditedTxId ?? 'posted'}.`,
+        order: updated,
+      };
+    }
+
+    const target = manualPurchaseOrders.find((o) => o.id === input.orderId);
+    if (!target) return { ok: false, message: 'Manual purchase order not found.' };
+
+    const customer = profiles.find((p) => p.id === target.userId);
+    const res = fulfilManualPurchaseOrderRecord({
+      order: target,
+      adminUserId: currentProfile.id,
+      adminLabel: currentProfile.fullName,
+      adminRole: currentRole,
+      customerAccountStatus: customer?.accountStatus ?? 'closed',
+      finalCryptoAmount: input.finalCryptoAmount,
+      finalFeeUsdt: input.finalFeeUsdt,
+      adminRemark: input.adminRemark,
+      expectedVersion: input.expectedVersion,
+      existingOrders: manualPurchaseOrders,
+      existingDeposits: deposits,
+      balances: walletBalances,
+      ledgerTransactions,
+      txId: exchangeService.generateId('ltx'),
+      entryId: exchangeService.generateId('le'),
+      balanceId: exchangeService.generateId('wb'),
+      eventId: exchangeService.generateId('mpe'),
+      nowIso: new Date().toISOString(),
+    });
+
+    if (!res.ok || !res.data) {
+      return { ok: false, message: res.error ?? 'Order fulfilment failed.' };
+    }
+
+    const { updatedOrder, updatedBalances, newTransaction, newEntry } = res.data;
+    setManualPurchaseOrders((prev) =>
+      prev.map((o) => (o.id === target.id ? updatedOrder : o))
+    );
+    setWalletBalances(updatedBalances);
+    setLedgerTransactions((prev) => [newTransaction, ...prev]);
+    setLedgerEntries((prev) => [newEntry, ...prev]);
+
+    appendAudit({
+      action: 'MANUAL_PURCHASE_FULFILLED',
+      affectedUserId: target.userId,
+      recordType: 'manual_purchase_orders',
+      recordId: target.id,
+      details: `Fulfilled ${updatedOrder.orderRef}: credited ${updatedOrder.finalCryptoAmount} ${updatedOrder.baseAsset} via ledger tx ${newTransaction.id}.`,
+    });
+    pushSystemNotification(
+      target.userId,
+      `Order Completed & Credited (${updatedOrder.orderRef})`,
+      `${updatedOrder.finalCryptoAmount} ${updatedOrder.baseAsset} has been credited to your internal wallet ledger.`,
+      'Trade'
+    );
+
+    return {
+      ok: true,
+      message: `Order ${updatedOrder.orderRef} fulfilled. Credited ${updatedOrder.finalCryptoAmount} ${updatedOrder.baseAsset} via ledger transaction ${newTransaction.id}.`,
+      order: updatedOrder,
+    };
+  };
+
   const markNotificationRead = (notificationId: string) => {
     const now = new Date().toISOString();
     setNotifications((prev) =>
@@ -1264,12 +2147,86 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return { ok: true, message: `KYC submission ${decision}.` };
   };
 
-  const reviewDeposit = (
+  const confirmDepositFinality = async (
+    depositId: string,
+    confirmations?: number
+  ): Promise<ActionResult> => {
+    if (!isAdmin || !currentUserId) return { ok: false, message: 'Admin permission required.' };
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.confirmDepositFinality(depositId, confirmations);
+      if (!apiRes.ok || !apiRes.data) {
+        await refreshAccountData();
+        return { ok: false, message: apiRes.message };
+      }
+      const updated = apiRes.data;
+      setDeposits((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+      await refreshAccountData();
+      return {
+        ok: true,
+        message: `Confirmations updated to ${updated.confirmations}/${updated.requiredConfirmations}.`,
+      };
+    }
+
+    const target = deposits.find((d) => d.id === depositId);
+    if (!target) return { ok: false, message: 'Deposit record not found.' };
+    if (target.status === 'CREDITED' || target.status === 'REJECTED') {
+      return { ok: false, message: 'Cannot modify block confirmations for a terminal deposit.' };
+    }
+    const nextConfirmations = Math.max(
+      target.confirmations,
+      confirmations ?? target.requiredConfirmations
+    );
+    const now = new Date().toISOString();
+    setDeposits((prev) =>
+      prev.map((d) =>
+        d.id === depositId
+          ? {
+              ...d,
+              confirmations: nextConfirmations,
+              updatedAt: now,
+            }
+          : d
+      )
+    );
+    appendAudit({
+      action: 'DEPOSIT_FINALITY_VERIFIED',
+      affectedUserId: target.userId,
+      recordType: 'deposits',
+      recordId: depositId,
+      details: `Verified on-chain block finality for deposit ${target.amount} ${target.assetSymbol} (${target.networkCode}): ${nextConfirmations}/${target.requiredConfirmations} confirmations.`,
+    });
+    return {
+      ok: true,
+      message: `Confirmations updated to ${nextConfirmations}/${target.requiredConfirmations}.`,
+    };
+  };
+
+  const reviewDeposit = async (
     depositId: string,
     decision: 'approved' | 'rejected',
     adminNote: string
-  ): ActionResult => {
+  ): Promise<ActionResult> => {
     if (!isAdmin || !currentUserId) return { ok: false, message: 'Admin permission required.' };
+
+    if (backendMode) {
+      const apiRes = await exchangeApi.reviewDeposit(depositId, decision, adminNote);
+      if (!apiRes.ok || !apiRes.data) {
+        await refreshAccountData();
+        return { ok: false, message: apiRes.message };
+      }
+      const updated = apiRes.data;
+      setDeposits((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+      await refreshAccountData();
+      return {
+        ok: true,
+        message:
+          decision === 'approved'
+            ? 'Verified deposit approved and credited once to ledger.'
+            : 'Deposit rejected.',
+      };
+    }
+
     const target = deposits.find((d) => d.id === depositId);
     if (!target) return { ok: false, message: 'Deposit record not found.' };
     const now = new Date().toISOString();
@@ -1302,11 +2259,14 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return { ok: true, message: 'Deposit rejected.' };
     }
 
+    const customer = profiles.find((p) => p.id === target.userId);
     const applied = applyDepositApproval({
       deposit: target,
       existingDeposits: deposits,
       balances: walletBalances,
       ledgerTransactions,
+      customerAccountStatus: customer?.accountStatus ?? 'closed',
+      existingManualPurchaseOrders: manualPurchaseOrders,
       adminUserId: currentUserId,
       adminNote,
       nowIso: now,
@@ -1795,6 +2755,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     currentRole,
     isAdmin,
     authLoading,
+    backendMode,
+    backendSyncing,
+    backendSyncError,
+    refreshAccountData,
     login,
     register,
     logout,
@@ -1829,12 +2793,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     notificationCampaigns,
     notifications,
     auditLogs,
+    receivingAddresses,
+    activeReceivingAddresses,
+    manualPurchaseOrders,
     currentUserBalances,
     currentUserKyc,
     currentUserDepositAddresses,
     currentUserDeposits,
     currentUserWithdrawals,
     currentUserOrders,
+    currentUserManualPurchaseOrders,
     currentUserTrades,
     currentUserTransactions,
     currentUserNotifications,
@@ -1847,12 +2815,20 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     requestWithdrawal,
     cancelWithdrawal,
     submitSpotOrder,
+    createManualPurchaseOrder,
+    submitManualPurchasePaymentDetails,
+    cancelManualPurchaseOrder,
     markNotificationRead,
     markAllNotificationsRead,
     toggleCustomerAccountStatus,
     reviewKyc,
+    confirmDepositFinality,
     reviewDeposit,
     assignDepositAddress,
+    saveReceivingAddress,
+    toggleReceivingAddressStatus,
+    reviewManualPurchaseOrder,
+    fulfilManualPurchaseOrder,
     reviewWithdrawal,
     dispatchApprovedWithdrawal,
     finalizeWithdrawalRecord,

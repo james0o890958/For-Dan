@@ -276,6 +276,7 @@ test('Phase 1 (006): passes structural SQL validation, ordering after 005, and s
     '006_security_and_rls_hardening.sql',
     '007_account_closure_concurrency_and_approval_hardening.sql',
     '008_closed_account_integrity_hardening.sql',
+    '009_manual_crypto_purchases.sql',
   ]);
 
   for (const fn of [
@@ -602,3 +603,50 @@ test('Phase 1.2 (008) [STATIC SQL] CD-3: approval_requests triggers lock request
     /CREATE TRIGGER trg_guard_closed_account_approval_requests\s+BEFORE INSERT OR UPDATE ON public\.approval_requests\s+FOR EACH ROW EXECUTE FUNCTION public\.guard_closed_account_approval_request_write\(\);/i
   );
 });
+
+test('Phase 2.5 (009) [STATIC SQL]: validates manual purchase schema, duplicate tx_hash index, immutable order trigger, RLS, and search_path pinning without altering 001-008', async () => {
+  const m009 = await readMigration('009_manual_crypto_purchases.sql');
+  assert.ok(m009.trim().length > 0, '009_manual_crypto_purchases.sql must not be empty');
+  checkBalancedDelimiters(m009);
+
+  for (const table of [
+    'receiving_addresses',
+    'receiving_address_audit_logs',
+    'manual_purchase_orders',
+    'manual_purchase_order_events',
+  ]) {
+    assert.match(
+      m009,
+      new RegExp(`CREATE TABLE IF NOT EXISTS public\\.${table}`, 'i'),
+      `Missing table ${table} in 009`
+    );
+    assert.match(
+      m009,
+      new RegExp(`ALTER TABLE public\\.${table} ENABLE ROW LEVEL SECURITY;`, 'i'),
+      `Missing ENABLE ROW LEVEL SECURITY for ${table}`
+    );
+  }
+
+  assert.match(
+    m009,
+    /CREATE UNIQUE INDEX IF NOT EXISTS uq_manual_purchase_orders_network_tx_hash\s+ON public\.manual_purchase_orders\s*\(receiving_network,\s*LOWER\(payment_tx_hash\)\)\s+WHERE payment_tx_hash IS NOT NULL AND status NOT IN \('REJECTED', 'CANCELLED'\);/i
+  );
+
+  assert.match(
+    m009,
+    /CREATE OR REPLACE FUNCTION public\.enforce_manual_purchase_order_rules\(\)[\s\S]*?SET search_path = public/i
+  );
+  assert.match(
+    m009,
+    /REVOKE ALL ON FUNCTION public\.enforce_manual_purchase_order_rules\(\) FROM PUBLIC, anon, authenticated;/i
+  );
+  assert.match(
+    m009,
+    /CREATE TRIGGER trg_enforce_manual_purchase_order_rules\s+BEFORE INSERT OR UPDATE ON public\.manual_purchase_orders/i
+  );
+  assert.match(
+    m009,
+    /CREATE TRIGGER trg_prevent_delete_manual_purchase_orders\s+BEFORE DELETE ON public\.manual_purchase_orders/i
+  );
+});
+

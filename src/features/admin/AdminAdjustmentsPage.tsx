@@ -3,14 +3,19 @@ import { AdminLayout } from '../../components/layout/AdminLayout';
 import { ConfirmDialog } from '../../components/ui/CommonPrimitives';
 import { useAppState } from '../../context/AppStateContext';
 import { exchangeService } from '../../services/platformService';
-import { formatQty } from '../../utils/tradingMath';
+import { formatQty, formatUsdt, roundAmount } from '../../utils/tradingMath';
+import { isTerminalManualPurchaseStatus } from '../../utils/manualPurchaseEngine';
 
 export const AdminAdjustmentsPage: React.FC = () => {
   const {
     customerProfiles,
     assets,
+    walletBalances,
     ledgerTransactions,
     ledgerEntries,
+    deposits,
+    manualPurchaseOrders,
+    auditLogs,
     reconciliationRuns,
     createLedgerAdjustment,
     runBalanceReconciliation,
@@ -31,6 +36,46 @@ export const AdminAdjustmentsPage: React.FC = () => {
     () => customerProfiles.find((c) => c.publicUserId === publicUserId.trim()) ?? null,
     [customerProfiles, publicUserId]
   );
+
+  const assetReconciliationSummary = useMemo(() => {
+    return assets.map((asset) => {
+      const assetWalletSum = walletBalances
+        .filter((b) => b.assetSymbol === asset.symbol)
+        .reduce((sum, b) => sum + b.available + b.reserved, 0);
+
+      const assetLedgerSum = ledgerEntries
+        .filter((e) => e.assetSymbol === asset.symbol)
+        .reduce((sum, e) => sum + e.deltaAmount, 0);
+
+      const discrepancy = roundAmount(assetWalletSum - assetLedgerSum, 8);
+      return {
+        symbol: asset.symbol,
+        name: asset.name,
+        walletSum: assetWalletSum,
+        ledgerSum: assetLedgerSum,
+        discrepancy,
+        matched: Math.abs(discrepancy) < 0.00000001,
+      };
+    });
+  }, [assets, walletBalances, ledgerEntries]);
+
+  const operationalVisibility = useMemo(() => {
+    const pendingDeposits = deposits.filter(
+      (d) =>
+        d.status === 'PENDING_ADMIN_REVIEW' ||
+        d.status === 'AWAITING_CONFIRMATIONS' ||
+        d.status === 'DETECTED'
+    ).length;
+    const pendingPurchases = manualPurchaseOrders.filter(
+      (o) => !isTerminalManualPurchaseStatus(o.status)
+    ).length;
+    const recentAuditsCount = auditLogs.length;
+    return {
+      pendingDeposits,
+      pendingPurchases,
+      recentAuditsCount,
+    };
+  }, [deposits, manualPurchaseOrders, auditLogs]);
 
   const recentAdjustments = useMemo(() => {
     const profileMap = new Map(customerProfiles.map((p) => [p.id, p]));
@@ -92,8 +137,134 @@ export const AdminAdjustmentsPage: React.FC = () => {
   };
 
   return (
-    <AdminLayout title="Ledger Adjustments & Reconciliation">
+    <AdminLayout title="Ledger Adjustments &amp; Reconciliation">
       <div className="space-y-6">
+        {/* Operational Visibility Metrics Banner */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-4">
+            <p className="text-xs text-[#686D76] dark:text-[#7E828A]">Pending Deposit Queue</p>
+            <p className="mt-1 text-xl font-bold font-mono-num text-[#004AE2] dark:text-[#60A5FA]">
+              {operationalVisibility.pendingDeposits}
+            </p>
+            <p className="mt-0.5 text-[11px] text-[#686D76]">Awaiting admin verification &amp; fulfilment</p>
+          </div>
+          <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-4">
+            <p className="text-xs text-[#686D76] dark:text-[#7E828A]">Active Manual Purchase Orders</p>
+            <p className="mt-1 text-xl font-bold font-mono-num text-[#D97706]">
+              {operationalVisibility.pendingPurchases}
+            </p>
+            <p className="mt-0.5 text-[11px] text-[#686D76]">Pending payment proof or settlement review</p>
+          </div>
+          <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-4">
+            <p className="text-xs text-[#686D76] dark:text-[#7E828A]">Audit Traceability Logs</p>
+            <p className="mt-1 text-xl font-bold font-mono-num text-[#10C478]">
+              {operationalVisibility.recentAuditsCount}
+            </p>
+            <p className="mt-0.5 text-[11px] text-[#686D76]">Immutable administrative records tracked</p>
+          </div>
+        </div>
+
+        {/* Read-Only Financial Reconciliation Report */}
+        <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">Financial Reconciliation &amp; Audit Report</h2>
+                <span className="px-2 py-0.5 rounded-full bg-[#E8EAEE] dark:bg-[#242528] text-[10px] font-semibold text-[#686D76] uppercase">
+                  Read-Only Report
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-[#686D76] dark:text-[#7E828A]">
+                Authoritative cross-check comparing total wallet balances (available + reserved) against append-only ledger entry sums. This report is strictly read-only and never automatically adjusts balances.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const res = runBalanceReconciliation();
+                setFeedback({ ok: res.ok, text: res.message });
+              }}
+              className="px-4 py-2 rounded-full bg-[#004AE2] text-white text-xs font-semibold hover:bg-[#003ec0]"
+            >
+              Run Balance Check
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" data-testid="admin-reconciliation-table">
+              <thead>
+                <tr className="bg-[#E8EAEE] dark:bg-[#262629] text-left text-xs text-[#686D76] dark:text-[#7E828A]">
+                  <th className="py-2.5 px-3.5 font-medium">Asset</th>
+                  <th className="py-2.5 px-3.5 font-medium text-right">Total Wallet Sum</th>
+                  <th className="py-2.5 px-3.5 font-medium text-right">Total Ledger Sum</th>
+                  <th className="py-2.5 px-3.5 font-medium text-right">Discrepancy</th>
+                  <th className="py-2.5 px-3.5 font-medium text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23]">
+                {assetReconciliationSummary.map((item) => (
+                  <tr key={item.symbol}>
+                    <td className="py-2.5 px-3.5 font-semibold">
+                      {item.symbol} <span className="text-[#686D76] font-normal">({item.name})</span>
+                    </td>
+                    <td className="py-2.5 px-3.5 text-right font-mono-num font-semibold">
+                      {formatQty(item.walletSum)}
+                    </td>
+                    <td className="py-2.5 px-3.5 text-right font-mono-num font-semibold">
+                      {formatQty(item.ledgerSum)}
+                    </td>
+                    <td className="py-2.5 px-3.5 text-right font-mono-num">
+                      <span className={item.discrepancy !== 0 ? 'text-[#F0525E] font-bold' : ''}>
+                        {formatQty(item.discrepancy)}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3.5 text-center">
+                      <span
+                        className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                          item.matched
+                            ? 'bg-[#10C478]/15 text-[#10C478]'
+                            : 'bg-[#F0525E]/15 text-[#F0525E]'
+                        }`}
+                      >
+                        {item.matched ? 'MATCHED' : 'MISMATCH'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Recent Reconciliation Audit Log Runs */}
+          {reconciliationRuns.length > 0 && (
+            <div className="space-y-2 pt-2 border-t border-[#E2E4E9] dark:border-[#22242A]">
+              <p className="text-xs font-semibold text-[#686D76]">Recent Reconciliation Execution Logs</p>
+              <div className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23] rounded-xl border border-[#E2E4E9] dark:border-[#22242A]">
+                {reconciliationRuns.slice(0, 3).map((r) => (
+                  <div key={r.id} className="p-3 text-xs flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-semibold uppercase">{r.scope.replace(/_/g, ' ')}</p>
+                      <p className="text-[#686D76] dark:text-[#7E828A]">{r.details}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span
+                        className={`font-semibold uppercase text-[11px] ${
+                          r.status === 'matched' ? 'text-[#10C478]' : 'text-[#F0525E]'
+                        }`}
+                      >
+                        {r.status}
+                      </span>
+                      <p className="font-mono-num text-[11px] text-[#686D76]">
+                        {new Date(r.createdAt).toLocaleTimeString()}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           {/* Immutable Ledger Adjustment Form */}
           <form
@@ -257,54 +428,8 @@ export const AdminAdjustmentsPage: React.FC = () => {
             </button>
           </form>
 
-          {/* Right Column: Reconciliation Runner & Recent Adjustments */}
+          {/* Right Column: Recent Adjustments */}
           <div className="lg:col-span-6 space-y-5">
-            <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-semibold">Balance Reconciliation</h2>
-                  <p className="mt-0.5 text-xs text-[#686D76] dark:text-[#7E828A]">
-                    Compare immutable ledger entry totals against customer wallet balances.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const res = runBalanceReconciliation();
-                    setFeedback({ ok: res.ok, text: res.message });
-                  }}
-                  className="px-4 py-2 rounded-full bg-[#004AE2] text-white text-xs font-semibold hover:bg-[#003ec0]"
-                >
-                  Run Reconciliation
-                </button>
-              </div>
-
-              <div className="divide-y divide-[#E2E4E9] dark:divide-[#1E1F23] rounded-xl border border-[#E2E4E9] dark:border-[#22242A]">
-                {reconciliationRuns.slice(0, 5).map((r) => (
-                  <div key={r.id} className="p-3 text-xs space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold uppercase">{r.scope.replace(/_/g, ' ')}</span>
-                      <span
-                        className={`font-semibold capitalize ${
-                          r.status === 'matched'
-                            ? 'text-[#10C478]'
-                            : r.status === 'mismatch'
-                              ? 'text-[#F0525E]'
-                              : 'text-[#D97706]'
-                        }`}
-                      >
-                        {r.status}
-                      </span>
-                    </div>
-                    <p className="text-[#686D76] dark:text-[#7E828A]">{r.details}</p>
-                    <p className="font-mono-num text-[11px] text-[#686D76] dark:text-[#7E828A]">
-                      {new Date(r.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
             <div className="rounded-2xl bg-white dark:bg-[#141518] border border-[#E2E4E9] dark:border-[#22242A] overflow-hidden">
               <div className="px-5 py-3.5 border-b border-[#E2E4E9] dark:border-[#22242A]">
                 <h2 className="text-sm font-semibold">Recent Adjustments &amp; Reversals</h2>

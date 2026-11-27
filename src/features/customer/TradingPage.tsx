@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { CustomerLayout } from '../../components/layout/CustomerLayout';
 import { MarketPairHeader } from '../../components/trading/MarketPairHeader';
+import { ManualPurchasePaymentModal } from '../../components/trading/ManualPurchasePaymentModal';
 import { OrderEntryPanel } from '../../components/trading/OrderEntryPanel';
 import { OrderPreviewModal } from '../../components/trading/OrderPreviewModal';
 import { EmptyState } from '../../components/ui/CommonPrimitives';
@@ -10,6 +11,7 @@ import { PriceChart } from '../../components/ui/PriceChart';
 import { TradeHistoryPanel } from '../../components/ui/TradeHistoryPanel';
 import { useAppState } from '../../context/AppStateContext';
 import type { TradeSide } from '../../types/domain';
+import { calculateManualPurchaseQuote } from '../../utils/manualPurchaseEngine';
 import { SANDBOX_REFERENCE_MARKETS } from '../../utils/overviewModel';
 import {
   computeAllocationShortcut,
@@ -40,6 +42,8 @@ export const TradingPage: React.FC = () => {
     currentProfile,
     tradingPairs,
     assets,
+    networks,
+    activeReceivingAddresses,
     marketPrices,
     marketSettings,
     marketLoading,
@@ -51,8 +55,12 @@ export const TradingPage: React.FC = () => {
     isWatchlisted,
     currentUserBalances,
     currentUserOrders,
+    currentUserManualPurchaseOrders,
     currentUserTrades,
     submitSpotOrder,
+    createManualPurchaseOrder,
+    submitManualPurchasePaymentDetails,
+    cancelManualPurchaseOrder,
   } = useAppState();
 
   const enabledPairs = useMemo(
@@ -74,12 +82,27 @@ export const TradingPage: React.FC = () => {
   const [totalInput, setTotalInput] = useState<string>('');
   const [lastEditedField, setLastEditedField] = useState<'quantity' | 'total'>('quantity');
   const [bookPriceApplied, setBookPriceApplied] = useState<number | null>(null);
+  const [selectedReceivingAddressId, setSelectedReceivingAddressId] = useState<string>(
+    activeReceivingAddresses[0]?.id ?? ''
+  );
+  const [activeManualOrderId, setActiveManualOrderId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
   const priceSourceRef = useRef<'none' | 'reference' | 'live' | 'user'>('none');
   const prevPairRef = useRef<string>(initialPair);
+
+  useEffect(() => {
+    if (activeReceivingAddresses.length === 0) {
+      if (selectedReceivingAddressId !== '') setSelectedReceivingAddressId('');
+      return;
+    }
+    const stillValid = activeReceivingAddresses.some((a) => a.id === selectedReceivingAddressId);
+    if (!stillValid) {
+      setSelectedReceivingAddressId(activeReceivingAddresses[0].id);
+    }
+  }, [activeReceivingAddresses, selectedReceivingAddressId]);
 
   useEffect(() => {
     const targetPair = searchParams.get('pair') || routeState?.selectedPair;
@@ -175,6 +198,44 @@ export const TradingPage: React.FC = () => {
     assetEnabled: Boolean(baseAssetMeta?.isEnabled && quoteAssetMeta?.isEnabled),
     baseAsset: activePair.baseAsset,
   });
+
+  const selectedReceivingAddress = activeReceivingAddresses.find(
+    (a) => a.id === selectedReceivingAddressId
+  );
+  const selectedPaymentNetwork = selectedReceivingAddress
+    ? networks.find(
+        (n) =>
+          n.assetSymbol === selectedReceivingAddress.assetSymbol &&
+          n.code === selectedReceivingAddress.networkCode
+      )
+    : undefined;
+
+  const requestedManualQuoteAmount =
+    lastEditedField === 'total' && Number(totalInput) > 0
+      ? Number(totalInput)
+      : evaluation.mathValid && evaluation.quoteGrossUsdt > 0
+        ? evaluation.quoteGrossUsdt
+        : 0;
+
+  const manualPurchaseQuote = calculateManualPurchaseQuote({
+    side,
+    orderType:
+      orderType === 'limit' ? 'LIMIT' : orderType === 'stop_limit' ? 'stop_limit' : 'MARKET',
+    pair: activePair,
+    baseAsset: baseAssetMeta,
+    quoteAsset: quoteAssetMeta,
+    requestedQuoteAmount: requestedManualQuoteAmount,
+    limitPrice: orderType === 'limit' ? Number(priceInput) : null,
+    referenceMarketPrice: effectiveMarketPrice,
+    accountStatus: currentProfile?.accountStatus ?? 'active',
+    kycStatus: currentProfile?.kycStatus ?? 'not_submitted',
+    receivingAddress: selectedReceivingAddress,
+    networkConfig: selectedPaymentNetwork,
+  });
+
+  const activeManualOrder = activeManualOrderId
+    ? currentUserManualPurchaseOrders.find((o) => o.id === activeManualOrderId) ?? null
+    : null;
 
   const handleSelectPair = (nextPair: string) => {
     setSelectedPairSymbol(nextPair);
@@ -346,6 +407,37 @@ export const TradingPage: React.FC = () => {
     }
   };
 
+  const handleConfirmManualPurchase = async () => {
+    if (!currentProfile) {
+      setFeedback({ ok: false, text: 'Sign in with a KYC-approved account to create a purchase order.' });
+      setPreviewOpen(false);
+      return;
+    }
+    if (!manualPurchaseQuote.valid || !selectedReceivingAddress) {
+      setFeedback({
+        ok: false,
+        text: manualPurchaseQuote.error || 'Select an active payment receiving address.',
+      });
+      return;
+    }
+    setSubmitting(true);
+    const res = await createManualPurchaseOrder({
+      pairSymbol: activePair.symbol,
+      orderType: orderType === 'limit' ? 'LIMIT' : 'MARKET',
+      requestedQuoteAmount: manualPurchaseQuote.requestedQuoteAmount,
+      limitPrice: orderType === 'limit' ? manualPurchaseQuote.limitPrice : null,
+      receivingAddressId: selectedReceivingAddress.id,
+    });
+    setSubmitting(false);
+    setPreviewOpen(false);
+    setFeedback({ ok: res.ok, text: res.message });
+    if (res.ok && res.order) {
+      setQuantityInput('');
+      setTotalInput('');
+      setActiveManualOrderId(res.order.id);
+    }
+  };
+
   return (
     <CustomerLayout title="Trading">
       <div className="space-y-4">
@@ -408,6 +500,9 @@ export const TradingPage: React.FC = () => {
               availableBase={baseBalance}
               reservedBase={baseReserved}
               evaluation={evaluation}
+              activeReceivingAddresses={activeReceivingAddresses}
+              selectedReceivingAddressId={selectedReceivingAddressId}
+              manualPurchaseQuote={manualPurchaseQuote}
               submitting={submitting}
               feedback={feedback}
               onChangeSide={handleChangeSide}
@@ -422,19 +517,22 @@ export const TradingPage: React.FC = () => {
               onChangeQuantity={handleChangeQuantity}
               onChangeTotal={handleChangeTotal}
               onApplyPercentage={handleApplyPercentage}
+              onSelectReceivingAddress={setSelectedReceivingAddressId}
               onOpenPreview={() => setPreviewOpen(true)}
             />
           </div>
         </div>
 
-        {/* Bottom Workspace: Recent Market Trades + Open Orders + Order History + Trade History */}
+        {/* Bottom Workspace: Recent Market Trades + Purchase Orders + Open Orders + Order History + Trade History */}
         <TradeHistoryPanel
           symbol={activePair.symbol}
           showAccountTabs={true}
           userTrades={currentUserTrades}
           userOrders={currentUserOrders}
+          userManualOrders={currentUserManualPurchaseOrders}
           isAuthenticated={Boolean(currentProfile)}
           onSelectPrice={handleSelectOrderBookPrice}
+          onInspectManualOrder={(order) => setActiveManualOrderId(order.id)}
         />
       </div>
 
@@ -442,9 +540,22 @@ export const TradingPage: React.FC = () => {
         open={previewOpen}
         pair={activePair}
         evaluation={evaluation}
+        manualPurchaseQuote={manualPurchaseQuote}
+        selectedReceivingAddress={selectedReceivingAddress}
         submitting={submitting}
         onConfirm={() => void handleConfirmOrder()}
+        onConfirmManualPurchase={handleConfirmManualPurchase}
         onClose={() => setPreviewOpen(false)}
+      />
+
+      <ManualPurchasePaymentModal
+        open={Boolean(activeManualOrder)}
+        order={activeManualOrder}
+        onSubmitPayment={async (input) => await submitManualPurchasePaymentDetails(input)}
+        onCancelOrder={async (orderId) =>
+          await cancelManualPurchaseOrder(orderId, 'Cancelled by customer prior to payment.')
+        }
+        onClose={() => setActiveManualOrderId(null)}
       />
     </CustomerLayout>
   );

@@ -220,5 +220,6 @@ test('listSqlMigrationFiles discovers all ordered versioned SQL migrations', asy
     '006_security_and_rls_hardening.sql',
     '007_account_closure_concurrency_and_approval_hardening.sql',
     '008_closed_account_integrity_hardening.sql',
+    '009_manual_crypto_purchases.sql',
   ]);
 });

@@ -1,10 +1,20 @@
-import express, { type Express, type NextFunction, type Request, type Response, type Router } from 'express';
+import express, {
+  type Express,
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response,
+  type Router,
+} from 'express';
+import type { Pool } from 'pg';
 import { getEnvConfig } from './config';
 import { testDatabaseConnection } from './db';
 import { requireAuth, requireRole } from './middleware/auth';
 import { asyncHandler, createCsrfProtectionMiddleware } from './middleware/security';
 import { createAuthRouter, type AuthRouterOptions } from './routes/auth';
+import depositsRoutes, { createDepositsRouter } from './routes/deposits';
 import marketsRoutes from './routes/markets';
+import purchaseOrdersRoutes, { createPurchaseOrdersRouter } from './routes/purchaseOrders';
 import securityRoutes from './routes/security';
 import { testSupabaseAuthHealth } from './supabase';
 import {
@@ -19,6 +29,11 @@ export interface CreateApiAppOptions {
   isProduction?: boolean;
   authRouter?: Router;
   authRouterOptions?: AuthRouterOptions;
+  authMiddleware?: RequestHandler;
+  pool?: Pool;
+  preferDbPrice?: boolean;
+  purchaseOrdersRouter?: Router;
+  depositsRouter?: Router;
   extraTestRouter?: (app: Express) => void;
   checkHealth?: () => Promise<{ databaseConnected: boolean; authReachable: boolean }>;
 }
@@ -78,6 +93,27 @@ export function createApiApp(options?: CreateApiAppOptions): Express {
   app.use('/api/auth', options?.authRouter ?? createAuthRouter(options?.authRouterOptions));
   app.use('/api/markets', marketsRoutes);
   app.use('/api/admin/security', securityRoutes);
+
+  const mountedPurchaseOrders =
+    options?.purchaseOrdersRouter ??
+    (options?.pool || options?.authMiddleware
+      ? createPurchaseOrdersRouter({
+          pool: options.pool,
+          authMiddleware: options.authMiddleware,
+          preferDbPrice: options.preferDbPrice,
+        })
+      : purchaseOrdersRoutes);
+  const mountedDeposits =
+    options?.depositsRouter ??
+    (options?.pool || options?.authMiddleware
+      ? createDepositsRouter({
+          pool: options.pool,
+          authMiddleware: options.authMiddleware,
+        })
+      : depositsRoutes);
+
+  app.use('/api', mountedPurchaseOrders);
+  app.use('/api', mountedDeposits);
 
   app.get('/api/providers/health', (_req, res) => {
     res.json({
